@@ -13,10 +13,14 @@ import DatabaseOverview from './modules/DatabaseOverview';
 import Home from './modules/home';
 import PurchaseRequests from './modules/PurchaseRequests';
 import RfqReceived from './modules/RfqReceived';
-import CatalogClassification from './modules/CatalogClassification';
+import ActiveNegotiations from './modules/ActiveNegotiations';
+import ApprovedRfqsHome from './modules/ApprovedRfqsHome';
+import RfqApprovalHome from './modules/RfqApprovalHome';
+// import CatalogClassification from './modules/CatalogClassification'; // removed from sidebar for now
 import InventoryCapital from './modules/InventoryCapital';
 import Negotiations from './modules/Negotiations';
 import VendorsOnboarded from './modules/VendorsOnboarded';
+import VendorsOnboardedHome from './modules/VendorsOnboardedHome';
 import SpendCategory from './modules/SpendCategory';
 import CommodityMarket from './modules/CommodityMarket';
 import MultiComponentContainer from './shared-modules/MultiComponentContainer';
@@ -74,7 +78,11 @@ const COMPONENTS = {
     Home,              // → Home button (/home)
     PurchaseRequests,  // → /dash/PurchaseRequests
     RfqReceived,       // embedded in Home via the "RFQs received" card — no dashboard route
-    CatalogClassification, // → /dash/CatalogClassification
+    ActiveNegotiations, // opened from an RFQ's "Start Negotiation" button — no dashboard route
+    ApprovedRfqsHome,  // embedded in Home via the "Approved RFQs" card — no dashboard route
+    RfqApprovalHome,   // opened from a negotiation's "Proceed to Approval" button — no dashboard route
+    VendorsOnboardedHome, // embedded in Home via the "Vendors Onboarded" card — no dashboard route
+    // CatalogClassification, // → /dash/CatalogClassification — removed from sidebar for now
     InventoryCapital,  // → /dash/InventoryCapital
     Negotiations,      // → /dash/Negotiations
     VendorsOnboarded,  // → /dash/VendorsOnboarded

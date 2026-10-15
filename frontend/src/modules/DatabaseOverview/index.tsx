@@ -281,11 +281,11 @@ const DatabaseOverview: React.FC<DatabaseOverviewProps> = ({
 
   if (error) {
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-[#FEE2E2] p-6">
+      <div className="bg-white rounded-xl shadow-sm border border-[#F1F5F9] p-6">
         <div className="flex items-center gap-3">
-          <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#DC2626] flex-shrink-0" />
+          <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#475569] flex-shrink-0" />
           <div>
-            <p className="text-sm font-medium text-[#DC2626]">Error loading schema</p>
+            <p className="text-sm font-medium text-[#475569]">Error loading schema</p>
             <p className="text-xs text-[#64748B] mt-1">{error}</p>
           </div>
         </div>

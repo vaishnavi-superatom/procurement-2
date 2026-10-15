@@ -22,7 +22,7 @@ interface RfqReceivedProps {
    * Negotiations experience built yet, so this is left undefined everywhere
    * today — the button renders disabled until a real destination exists to
    * hand off to, rather than linking to a dead/fake page. */
-  onStartNegotiation?: (args: { prId: string; rfqId: string; vendorId: string; vendorName?: string | null }) => void;
+  onStartNegotiation?: (args: { prId: string; rfqId: string; materialId: string; vendorId: string; vendorName?: string | null }) => void;
 }
 
 // Same palette as the Home dashboard / Purchase Requests screen, so this
@@ -367,11 +367,11 @@ const RfqListScreen: React.FC<{
 
   if (error) {
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-[#FEE2E2] p-6">
+      <div className="bg-white rounded-xl shadow-sm border border-[#F1F5F9] p-6">
         <div className="flex items-center gap-3">
-          <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#DC2626] flex-shrink-0" />
+          <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#475569] flex-shrink-0" />
           <div>
-            <p className="text-sm font-medium text-[#DC2626]">Couldn't load RFQs</p>
+            <p className="text-sm font-medium text-[#475569]">Couldn't load RFQs</p>
             <p className="text-xs mt-1" style={{ color: COLORS.text.secondary }}>{error}</p>
           </div>
         </div>
@@ -525,7 +525,7 @@ const RfqDetailScreen: React.FC<{
   rfqId: string;
   onBack: () => void;
   SA_RUNTIME: any;
-  onStartNegotiation?: (args: { prId: string; rfqId: string; vendorId: string; vendorName?: string | null }) => void;
+  onStartNegotiation?: (args: { prId: string; rfqId: string; materialId: string; vendorId: string; vendorName?: string | null }) => void;
 }> = ({ rfqId, onBack, SA_RUNTIME, onStartNegotiation }) => {
   const [header, setHeader] = useState<RfqHeader | null>(null);
   const [quotations, setQuotations] = useState<QuotationRow[]>([]);
@@ -601,10 +601,10 @@ const RfqDetailScreen: React.FC<{
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs font-medium mb-4" style={{ color: TEAL.base }}>
           <Icon icon="mdi:arrow-left" className="w-4 h-4" /> Back to RFQs Received
         </button>
-        <div className="bg-white rounded-xl shadow-sm border border-[#FEE2E2] p-6">
+        <div className="bg-white rounded-xl shadow-sm border border-[#F1F5F9] p-6">
           <div className="flex items-center gap-3">
-            <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#DC2626] flex-shrink-0" />
-            <p className="text-sm" style={{ color: '#DC2626' }}>{error}</p>
+            <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#475569] flex-shrink-0" />
+            <p className="text-sm" style={{ color: '#475569' }}>{error}</p>
           </div>
         </div>
       </div>
@@ -724,8 +724,8 @@ const RfqDetailScreen: React.FC<{
                       <span
                         className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
                         style={{
-                          backgroundColor: q.is_technically_compliant ? '#DCFCE7' : '#FEE2E2',
-                          color: q.is_technically_compliant ? '#16A34A' : '#DC2626',
+                          backgroundColor: q.is_technically_compliant ? '#DCFCE7' : '#F1F5F9',
+                          color: q.is_technically_compliant ? '#16A34A' : '#475569',
                         }}
                       >
                         {q.is_technically_compliant ? 'Yes' : 'No'}
@@ -739,17 +739,12 @@ const RfqDetailScreen: React.FC<{
         </div>
 
         {/* Hands off the linked PR, this RFQ, and the leading supplier to
-            Active Negotiations — not built yet, so this stays disabled until
-            a real destination is wired up (see onStartNegotiation above). */}
+            Active Negotiations. Disabled when there's no quotation to
+            negotiate from (see onStartNegotiation / negotiationSupported above). */}
         <div
-          className="rounded-xl flex items-center justify-between gap-3 px-4 py-3"
+          className="rounded-xl flex items-center justify-end gap-3 px-4 py-3"
           style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
         >
-          <p className="text-xs" style={{ color: COLORS.text.secondary }}>
-            {leadingQuote
-              ? <>Negotiate with <span className="font-medium" style={{ color: COLORS.text.primary }}>{leadingQuote.vendor_name || leadingQuote.vendor_id}</span> for this RFQ.</>
-              : 'No quotation to negotiate yet.'}
-          </p>
           <button
             disabled={!negotiationSupported}
             onClick={() => {
@@ -757,6 +752,7 @@ const RfqDetailScreen: React.FC<{
               onStartNegotiation?.({
                 prId: header.pr_id,
                 rfqId: header.rfq_id,
+                materialId: header.material_id,
                 vendorId: leadingQuote.vendor_id,
                 vendorName: leadingQuote.vendor_name,
               });

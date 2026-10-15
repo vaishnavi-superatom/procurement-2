@@ -4,6 +4,11 @@ import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../../design-system/tokens';
 import PurchaseRequests from '../PurchaseRequests';
 import RfqReceived from '../RfqReceived';
+import ActiveNegotiations from '../ActiveNegotiations';
+import Negotiations from '../Negotiations';
+import VendorsOnboardedHome from '../VendorsOnboardedHome';
+import ApprovedRfqsHome from '../ApprovedRfqsHome';
+import RfqApprovalHome from '../RfqApprovalHome';
 
 interface HomeProps {
   SA_RUNTIME?: any;
@@ -25,44 +30,70 @@ type Period = 'Today' | 'This Week' | 'This Month' | 'This Year';
 
 const PERIOD_OPTIONS: Period[] = ['Today', 'This Week', 'This Month', 'This Year'];
 
-interface KPI {
+interface KpiMeta {
   label: string;
-  value: number;
   icon: string;
   iconColor: string;
   iconBg: string;
 }
 
-const KPI_DATA: Record<Period, KPI[]> = {
-  Today: [
-    { label: 'Total PRs Raised', value: 2, icon: 'mdi:file-document-plus-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-    { label: 'RFQs received', value: 3, icon: 'mdi:send-outline', iconColor: '#0EA5E9', iconBg: '#E0F2FE' },
-    { label: 'Active Negotiations', value: 4, icon: 'mdi:shield-outline', iconColor: TEAL.base, iconBg: TEAL.tint },
-    { label: 'Approved RFQs', value: 0, icon: 'mdi:hammer', iconColor: '#EA580C', iconBg: '#FFEDD5' },
-    { label: 'Vendors Onboarded', value: 0, icon: 'mdi:file-document-edit-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-  ],
-  'This Week': [
-    { label: 'Total PRs Raised', value: 6, icon: 'mdi:file-document-plus-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-    { label: 'RFQs received', value: 9, icon: 'mdi:send-outline', iconColor: '#0EA5E9', iconBg: '#E0F2FE' },
-    { label: 'Active Negotiations', value: 10, icon: 'mdi:shield-outline', iconColor: TEAL.base, iconBg: TEAL.tint },
-    { label: 'Approved RFQs', value: 1, icon: 'mdi:hammer', iconColor: '#EA580C', iconBg: '#FFEDD5' },
-    { label: 'Vendors Onboarded', value: 1, icon: 'mdi:file-document-edit-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-  ],
-  'This Month': [
-    { label: 'Total PRs Raised', value: 13, icon: 'mdi:file-document-plus-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-    { label: 'RFQs received', value: 18, icon: 'mdi:send-outline', iconColor: '#0EA5E9', iconBg: '#E0F2FE' },
-    { label: 'Active Negotiations', value: 18, icon: 'mdi:shield-outline', iconColor: TEAL.base, iconBg: TEAL.tint },
-    { label: 'Approved RFQs', value: 2, icon: 'mdi:hammer', iconColor: '#EA580C', iconBg: '#FFEDD5' },
-    { label: 'Vendors Onboarded', value: 4, icon: 'mdi:file-document-edit-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-  ],
-  'This Year': [
-    { label: 'Total PRs Raised', value: 142, icon: 'mdi:file-document-plus-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-    { label: 'RFQs received', value: 196, icon: 'mdi:send-outline', iconColor: '#0EA5E9', iconBg: '#E0F2FE' },
-    { label: 'Active Negotiations', value: 54, icon: 'mdi:shield-outline', iconColor: TEAL.base, iconBg: TEAL.tint },
-    { label: 'Approved RFQs', value: 37, icon: 'mdi:hammer', iconColor: '#EA580C', iconBg: '#FFEDD5' },
-    { label: 'Vendors Onboarded', value: 29, icon: 'mdi:file-document-edit-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
-  ],
-};
+// Icon/color metadata only — the number itself is fetched live (see
+// fetchKpiCounts below) from the exact same tables and period boundaries
+// each card's embedded table filters by, so the card and the table it opens
+// can never disagree.
+const KPI_META: KpiMeta[] = [
+  { label: 'Total PRs Raised', icon: 'mdi:file-document-plus-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
+  { label: 'RFQs received', icon: 'mdi:send-outline', iconColor: '#0EA5E9', iconBg: '#E0F2FE' },
+  { label: 'Active Negotiations', icon: 'mdi:shield-outline', iconColor: TEAL.base, iconBg: TEAL.tint },
+  { label: 'Approved RFQs', icon: 'mdi:hammer', iconColor: '#EA580C', iconBg: '#FFEDD5' },
+  { label: 'Vendors Onboarded', icon: 'mdi:file-document-edit-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
+];
+
+const TOOL_ID = 'postgres-0fc80d2496ff_query';
+const TOOL_NAME = 'Query PostgreSQL Connection';
+
+async function runCount(sql: string, params: Record<string, any>, SA_RUNTIME: any): Promise<number> {
+  const toolExecutor = (window as any).SA?.ToolExecutor;
+  if (!toolExecutor) throw new Error('ToolExecutor not available');
+  const res = await toolExecutor.executeTool({
+    externalTool: { toolId: TOOL_ID, toolName: TOOL_NAME, parameters: { sql, params } },
+    formData: {},
+    SA_RUNTIME,
+  });
+  const payload = res?.data ?? res;
+  const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.records) ? payload.records : [];
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+// Same Today/This Week/This Month/This Year semantics as every embedded
+// table's own time filter (inTimeFilter), expressed as a [start, end) date
+// range so it can be pushed into the COUNT queries instead of pulling every
+// row just to count them.
+function periodBounds(period: Period): { start: string; end: string } {
+  const now = new Date();
+  const toISO = (d: Date) => d.toISOString().slice(0, 10);
+  if (period === 'Today') {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
+    return { start: toISO(start), end: toISO(end) };
+  }
+  if (period === 'This Week') {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    return { start: toISO(start), end: toISO(end) };
+  }
+  if (period === 'This Month') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    return { start: toISO(start), end: toISO(end) };
+  }
+  // This Year
+  const start = new Date(now.getFullYear(), 0, 1);
+  const end = new Date(now.getFullYear() + 1, 0, 1);
+  return { start: toISO(start), end: toISO(end) };
+}
 
 const METADATA: ComponentMetadata = {
   id: 'home-procurement-glance',
@@ -85,8 +116,14 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
   const [open, setOpen] = useState(false);
   const [showPRList, setShowPRList] = useState(false);
   const [showRfqList, setShowRfqList] = useState(false);
+  const [showNegotiation, setShowNegotiation] = useState(false);
+  const [showNegotiationsList, setShowNegotiationsList] = useState(false);
+  const [showVendorsList, setShowVendorsList] = useState(false);
+  const [showApprovedRfqsList, setShowApprovedRfqsList] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const rfqBlockRef = useRef<HTMLDivElement>(null);
+  const negotiationBlockRef = useRef<HTMLDivElement>(null);
+  const approvalBlockRef = useRef<HTMLDivElement>(null);
 
   // Scenario 2: a PR's "Evaluate RFQ(s)" opens the RFQ experience focused on
   // its linked RFQ. focusToken forces RfqReceived to re-jump even if the same
@@ -107,6 +144,56 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
       rfqBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [rfqFocusToken]);
+
+  // An RFQ's "Start Negotiation" opens the negotiation workspace for that
+  // exact PR/RFQ/material/supplier.
+  const [negotiationContext, setNegotiationContext] = useState<{
+    prId: string;
+    rfqId: string;
+    materialId: string;
+    vendorId: string;
+  } | null>(null);
+
+  const handleStartNegotiation = ({
+    prId,
+    rfqId,
+    materialId,
+    vendorId,
+  }: {
+    prId: string;
+    rfqId: string;
+    materialId: string;
+    vendorId: string;
+    vendorName?: string | null;
+  }) => {
+    setNegotiationContext({ prId, rfqId, materialId, vendorId });
+    setShowNegotiation(true);
+  };
+
+  useEffect(() => {
+    if (negotiationContext) {
+      negotiationBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [negotiationContext]);
+
+  // A negotiation's "Proceed to Approval" opens the approval view for that
+  // exact PR/RFQ/material/supplier.
+  const [approvalContext, setApprovalContext] = useState<{
+    prId: string;
+    rfqId: string;
+    materialId: string;
+    vendorId: string;
+  } | null>(null);
+
+  const handleProceedToApproval = (args: { prId: string; rfqId: string; materialId: string; vendorId: string }) => {
+    setApprovalContext(args);
+  };
+
+  useEffect(() => {
+    if (approvalContext) {
+      approvalBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [approvalContext]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -187,12 +274,26 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
         {kpis.map((kpi) => {
           const isPRCard = kpi.label === 'Total PRs Raised';
           const isRfqCard = kpi.label === 'RFQs received';
-          const isExpanded = (isPRCard && showPRList) || (isRfqCard && showRfqList);
+          const isNegotiationsCard = kpi.label === 'Active Negotiations';
+          const isVendorsCard = kpi.label === 'Vendors Onboarded';
+          const isApprovedRfqsCard = kpi.label === 'Approved RFQs';
+          const isExpanded =
+            (isPRCard && showPRList) ||
+            (isRfqCard && showRfqList) ||
+            (isNegotiationsCard && showNegotiationsList) ||
+            (isVendorsCard && showVendorsList) ||
+            (isApprovedRfqsCard && showApprovedRfqsList);
           const toggle = isPRCard
             ? () => setShowPRList((s) => !s)
             : isRfqCard
               ? () => setShowRfqList((s) => !s)
-              : undefined;
+              : isNegotiationsCard
+                ? () => setShowNegotiationsList((s) => !s)
+                : isVendorsCard
+                  ? () => setShowVendorsList((s) => !s)
+                  : isApprovedRfqsCard
+                    ? () => setShowApprovedRfqsList((s) => !s)
+                    : undefined;
           return (
             <div
               key={kpi.label}
@@ -261,7 +362,89 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
               focusRfqId={rfqFocusId}
               focusSearch={rfqFocusSearch}
               focusToken={rfqFocusToken}
+              onStartNegotiation={handleStartNegotiation}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Start Negotiation → negotiation workspace, inline below, same screen */}
+      {showNegotiation && negotiationContext && (
+        <div className="mt-8" ref={negotiationBlockRef}>
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <ActiveNegotiations
+              SA_RUNTIME={SA_RUNTIME}
+              prId={negotiationContext.prId}
+              rfqId={negotiationContext.rfqId}
+              materialId={negotiationContext.materialId}
+              vendorId={negotiationContext.vendorId}
+              onBack={() => setShowNegotiation(false)}
+              onProceedToApproval={handleProceedToApproval}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Proceed to Approval → approval workspace, inline below, same screen */}
+      {approvalContext && (
+        <div className="mt-8" ref={approvalBlockRef}>
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <RfqApprovalHome
+              SA_RUNTIME={SA_RUNTIME}
+              prId={approvalContext.prId}
+              rfqId={approvalContext.rfqId}
+              materialId={approvalContext.materialId}
+              vendorId={approvalContext.vendorId}
+              onBack={() => setApprovalContext(null)}
+              onViewRfq={handleEvaluateRfq}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Active Negotiations card → negotiations list, inline below, same screen */}
+      {showNegotiationsList && (
+        <div className="mt-8">
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <Negotiations SA_RUNTIME={SA_RUNTIME} compact={false} />
+          </div>
+        </div>
+      )}
+
+      {/* Vendors Onboarded card → vendor directory, inline below, same screen */}
+      {showVendorsList && (
+        <div className="mt-8">
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <VendorsOnboardedHome SA_RUNTIME={SA_RUNTIME} initialPeriod={period} />
+          </div>
+        </div>
+      )}
+
+      {/* Approved RFQs card → approved RFQs list, inline below, same screen */}
+      {showApprovedRfqsList && (
+        <div className="mt-8">
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <ApprovedRfqsHome SA_RUNTIME={SA_RUNTIME} onOpenRfq={handleEvaluateRfq} />
           </div>
         </div>
       )}

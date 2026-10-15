@@ -268,8 +268,8 @@ const UrgencyBadge: React.FC<{ urgency: string }> = ({ urgency }) => {
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
       style={{
-        backgroundColor: high ? '#FEE2E2' : COLORS.lightGray,
-        color: high ? '#DC2626' : COLORS.text.secondary,
+        backgroundColor: high ? '#F1F5F9' : COLORS.lightGray,
+        color: high ? '#475569' : COLORS.text.secondary,
       }}
     >
       {high && <Icon icon="mdi:alert-circle" className="w-3 h-3" />}
@@ -516,7 +516,7 @@ const PRListScreen: React.FC<{
   const columnCount = showRfqColumn ? 8 : 7;
   // Compact padding/row-height for the standalone page only — the Home
   // "Total PRs Raised" table (showRfqColumn=true) keeps its original sizing.
-  const cellPad = showRfqColumn ? 'px-4 py-3' : 'px-3 py-2';
+  const cellPad = showRfqColumn ? 'px-4 py-3' : 'px-3 py-1.5';
   const pageTitle = showRfqColumn ? 'Purchase Requests' : 'Purchase Requisitions';
 
   if (loading) {
@@ -525,11 +525,11 @@ const PRListScreen: React.FC<{
 
   if (error) {
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-[#FEE2E2] p-6">
+      <div className="bg-white rounded-xl shadow-sm border border-[#F1F5F9] p-6">
         <div className="flex items-center gap-3">
-          <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#DC2626] flex-shrink-0" />
+          <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#475569] flex-shrink-0" />
           <div>
-            <p className="text-sm font-medium text-[#DC2626]">Couldn't load purchase requests</p>
+            <p className="text-sm font-medium text-[#475569]">Couldn't load purchase requests</p>
             <p className="text-xs mt-1" style={{ color: COLORS.text.secondary }}>{error}</p>
           </div>
         </div>
@@ -538,7 +538,14 @@ const PRListScreen: React.FC<{
   }
 
   return (
-    <div className="w-full flex flex-col" style={{ height: 'calc(100vh - 160px)', minHeight: 480 }}>
+    <div
+      className={showRfqColumn ? 'w-full flex flex-col' : 'flex flex-col mx-auto'}
+      style={{
+        height: 'calc(100vh - 160px)',
+        minHeight: 480,
+        ...(showRfqColumn ? {} : { width: '82%', minWidth: 760 }),
+      }}
+    >
       {/* Toolbar — fixed, never scrolls */}
       <div className="flex items-center justify-between flex-wrap gap-3 mb-4 flex-shrink-0">
         <div>
@@ -596,13 +603,13 @@ const PRListScreen: React.FC<{
           {/* Fixed column widths so content never triggers a table-wide
               column-width recalculation (e.g. on row hover). */}
           <colgroup>
-            <col style={{ width: showRfqColumn ? '110px' : '95px' }} />
+            <col style={{ width: showRfqColumn ? '110px' : '112px' }} />
             <col />
-            <col style={{ width: showRfqColumn ? '130px' : '115px' }} />
-            <col style={{ width: showRfqColumn ? '80px' : '70px' }} />
-            <col style={{ width: showRfqColumn ? '90px' : '80px' }} />
+            <col style={{ width: showRfqColumn ? '130px' : '108px' }} />
+            <col style={{ width: showRfqColumn ? '80px' : '64px' }} />
+            <col style={{ width: showRfqColumn ? '90px' : '76px' }} />
             {showRfqColumn && <col style={{ width: '110px' }} />}
-            <col style={{ width: showRfqColumn ? '100px' : '140px' }} />
+            <col style={{ width: showRfqColumn ? '100px' : '136px' }} />
             <col style={{ width: showRfqColumn ? '120px' : '105px' }} />
           </colgroup>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: COLORS.lightBackground }}>
@@ -804,10 +811,10 @@ const PRDetailScreen: React.FC<{
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs font-medium mb-4" style={{ color: TEAL.base }}>
           <Icon icon="mdi:arrow-left" className="w-4 h-4" /> Back to Purchase Requests
         </button>
-        <div className="bg-white rounded-xl shadow-sm border border-[#FEE2E2] p-6">
+        <div className="bg-white rounded-xl shadow-sm border border-[#F1F5F9] p-6">
           <div className="flex items-center gap-3">
-            <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#DC2626] flex-shrink-0" />
-            <p className="text-sm" style={{ color: '#DC2626' }}>{error}</p>
+            <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#475569] flex-shrink-0" />
+            <p className="text-sm" style={{ color: '#475569' }}>{error}</p>
           </div>
         </div>
       </div>
@@ -1008,7 +1015,7 @@ const PRDetailScreen: React.FC<{
                       <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.plant_code}</td>
                       <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.current_stock}</td>
                       <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.reserved_stock}</td>
-                      <td className="px-4 py-2 font-medium" style={{ color: available >= (line?.requested_qty || 0) ? '#16A34A' : '#DC2626' }}>
+                      <td className="px-4 py-2 font-medium" style={{ color: available >= (line?.requested_qty || 0) ? '#16A34A' : '#475569' }}>
                         {available}
                       </td>
                       <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.reorder_point}</td>
