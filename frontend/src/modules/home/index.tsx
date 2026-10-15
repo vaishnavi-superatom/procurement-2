@@ -203,10 +203,18 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
         })}
       </div>
 
-      {/* Total PRs Raised → Purchase Requests list, inline below, same screen */}
+      {/* Total PRs Raised → Purchase Requests list, inline below, same screen.
+          Space is given (divider + gap) before the block so it reads as a
+          distinct new section rather than appearing flush under the cards. */}
       {showPRList && (
-        <div className="mt-4 rounded-lg p-4" style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}>
-          <PurchaseRequests SA_RUNTIME={SA_RUNTIME} rfqFilterEnabled />
+        <div className="mt-8">
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <PurchaseRequests SA_RUNTIME={SA_RUNTIME} simplifiedToolbar />
+          </div>
         </div>
       )}
     </div>

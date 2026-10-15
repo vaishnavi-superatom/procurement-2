@@ -6,6 +6,10 @@ import { COLORS, SHADOWS, BORDER_RADIUS, TYPOGRAPHY, SPACING } from '../../desig
 
 const MAPBOX_CDN_JS = 'https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.js';
 const MAPBOX_CDN_CSS = 'https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.css';
+// Mapbox GL JS runs in the browser, so this must be a public "pk." token —
+// never an "sk." secret token. Set VITE_MAPBOX_TOKEN in frontend/.env.local
+// (gitignored; see frontend/.env.example).
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 
 // ============================================
 // TYPES
@@ -599,6 +603,11 @@ const DynamicMapView: React.FC<DynamicMapViewProps> = ({
   useEffect(() => {
     if (!mapboxLoaded || !mapContainerRef.current || loading || data.length === 0) return;
     if (mapRef.current) return; // Already initialized
+
+    if (!MAPBOX_TOKEN) {
+      setError('Mapbox access token is not configured. Set VITE_MAPBOX_TOKEN in frontend/.env.local.');
+      return;
+    }
 
     const mapboxgl = (window as any).mapboxgl;
     mapboxgl.accessToken = MAPBOX_TOKEN;
