@@ -97,12 +97,13 @@ const ATTACHMENTS_NOTE = '.attachments-note';
 /**
  * Set when this turn's composition replaced a previous one (another domain, or an admin edit).
  * prepare() then ends the codex session, so the turn starts fresh on the new instructions and
- * buildPrompt carries the chat's previous question instead of the old domain's whole context.
+ * buildPrompt carries the chat's last few questions instead of the old domain's whole context.
  */
 const SWITCH_MARKER = '.graph-switched';
-/** The thread's last question and its answer's title, for the note a fresh session gets. */
-const LAST_QUESTION = '.last-question';
+/** The thread's last questions and their answers' titles, for the note a fresh session gets. */
+const RECENT_QUESTIONS = '.recent-questions.json';
 const EARLIER_NOTE = '.earlier-note';
+const RECENT_KEPT = 3;
 
 /** The domain holding the parts every other domain gets. */
 const SHARED_DOMAIN = 'shared';
@@ -366,14 +367,16 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 		// A recovery turn keeps them: its answer is built from the files this question already wrote.
 		// What this chat asked last, kept for a fresh session's note (answer.md is cleared below).
 		if (!input.recovery) {
-			let earlier = '';
-			try {
-				const question = fs.readFileSync(ws.pathTo(LAST_QUESTION), 'utf-8').trim();
-				const title = /^#\s+(.+)$/m.exec(fs.readFileSync(ws.pathTo('answer.md'), 'utf-8'))?.[1]?.trim();
-				if (question) earlier = `"${question}"${title ? ` — answered as "${title}"` : ''}`;
-			} catch { /* first question, or no answer written */ }
-			fs.writeFileSync(ws.pathTo(EARLIER_NOTE), earlier);
-			fs.writeFileSync(ws.pathTo(LAST_QUESTION), input.question ?? '');
+			let recent: Array<{ question: string; title?: string }> = [];
+			try { recent = JSON.parse(fs.readFileSync(ws.pathTo(RECENT_QUESTIONS), 'utf-8')); } catch { /* first question */ }
+			const last = recent[recent.length - 1];
+			if (last && !last.title) {
+				try { last.title = /^#\s+(.+)$/m.exec(fs.readFileSync(ws.pathTo('answer.md'), 'utf-8'))?.[1]?.trim(); } catch { /* no answer written */ }
+			}
+			fs.writeFileSync(ws.pathTo(EARLIER_NOTE), recent
+				.map(r => `- "${r.question}"${r.title ? ` — answered as "${r.title}"` : ''}`).join('\n'));
+			recent.push({ question: input.question ?? '' });
+			fs.writeFileSync(ws.pathTo(RECENT_QUESTIONS), JSON.stringify(recent.slice(-RECENT_KEPT)));
 		}
 		if (!input.recovery) for (const stale of ['input', 'AGENTS.md', 'out/answer.json', 'answer.md', 'data', '.query-results', 'sql']) {
 			fs.rmSync(ws.pathTo(stale), { force: true, recursive: ['data', 'input', '.query-results', 'sql'].includes(stale) });
@@ -448,7 +451,7 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 			if (fs.existsSync(marker)) {
 				fs.rmSync(marker, { force: true });
 				const earlier = fs.readFileSync(ws.pathTo(EARLIER_NOTE), 'utf-8').trim();
-				if (earlier) handover = `Earlier in this chat the person asked ${earlier}. Use it only if this question refers to it.\n\n`;
+				if (earlier) handover = `Earlier in this chat the person asked:\n${earlier}\nUse them only if this question refers to them.\n\n`;
 			}
 		} catch { /* no marker: ordinary turn */ }
 
