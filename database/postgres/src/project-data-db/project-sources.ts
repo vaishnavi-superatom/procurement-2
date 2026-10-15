@@ -354,6 +354,17 @@ export async function updateProjectSource(params: UpdateProjectSourceParams) {
 }
 
 /**
+ * Postgres rejects U+0000 in json/text ("unsupported Unicode escape sequence").
+ * Binary-ish columns (e.g. encrypted password blobs) can yield sample values
+ * containing NUL, so strip it before the schema is persisted.
+ */
+function stripNulChars<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, v) => (typeof v === "string" ? v.replace(/\u0000/g, "") : v)),
+  );
+}
+
+/**
  * Update just the schema for a source (used after schema extraction)
  */
 export async function updateSourceSchema(id: string, sourceSchema: Record<string, any>) {
@@ -364,7 +375,7 @@ export async function updateSourceSchema(id: string, sourceSchema: Record<string
   const result = await db
     .update(projectSources)
     .set({
-      schema: sourceSchema,
+      schema: stripNulChars(sourceSchema),
       lastSyncAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })
