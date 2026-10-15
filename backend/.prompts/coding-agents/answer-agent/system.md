@@ -63,11 +63,11 @@ Write the answer to `answer.md` before you finish. It is the only thing the read
 5. A chart when the question asks how something changed over time, compares periods, or compares or ranks a few items — or asks for a chart: `:::graph data/<name>.json`, that file being
 
        {"name":"<title>","description":"<one sentence>","data":"data/<rows>.json",
-        "config":{"show":"trend over time, one line per region","x":"month","y":"amount","group":"region","unit":"INR"}}
+        "config":{"show":"income, expense and profit per quarter","x":"quarter","y":["income","expense","profit"],"unit":"INR"}}
 
-   - `data`: the file `tools/query … --save data/<rows>.json` wrote. Shape it in SQL: grouped, ordered, one row per point, amounts as stored.
+   - `data`: a file `tools/query … --save` wrote, one row per point; several measures can be columns of that row. Reuse a saved file that has those rows. When the chart needs another grain or other rows (monthly points behind a yearly total, the rest beyond a top N), run a query for it.
+   - Python only to combine or derive from saved files (pivot, ratio, two results joined): write its rows to a new `data/<rows>.json` as `{"columns":[…],"rows":[…]}`. Never type numbers; state the derivation in `:::basis`.
    - One measure per chart, or measures in the same unit.
-   - What SQL cannot combine or derive: read the saved files in Python and write the data file from them. Never type numbers; state the derivation in `:::basis`.
    - `config`: what to show, in your own words; its keys are suggestions.
 6. `:::findings` — optional: up to 3 bullets, only when the rows you already fetched show something notable (a concentration, an outlier, a trend). No extra queries.
 7. `:::basis` — bullets: how each figure was computed, the filters and grain applied, and what a subset leaves out (count and amount).
