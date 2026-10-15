@@ -23,6 +23,11 @@ interface RfqReceivedProps {
    * today — the button renders disabled until a real destination exists to
    * hand off to, rather than linking to a dead/fake page. */
   onStartNegotiation?: (args: { prId: string; rfqId: string; materialId: string; vendorId: string; vendorName?: string | null }) => void;
+  /** Default for the list's own Filter-by-Time control — set from Home's
+   * "Procurement at a Glance" period so the embedded table opens showing the
+   * exact rows the "RFQs received" card counted. Still a normal, buyer-
+   * changeable control after that; this only sets where it starts. */
+  initialPeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
 }
 
 // Same palette as the Home dashboard / Purchase Requests screen, so this
@@ -307,9 +312,10 @@ const RfqListScreen: React.FC<{
   onOpen: (rfqId: string) => void;
   focusSearch?: string;
   focusToken?: number;
-}> = ({ rows, loading, error, onOpen, focusSearch, focusToken }) => {
+  initialPeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
+}> = ({ rows, loading, error, onOpen, focusSearch, focusToken, initialPeriod }) => {
   const [search, setSearch] = useState('');
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>('This Month');
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>(initialPeriod || 'This Month');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const PAGE_SIZE = 100;
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -328,6 +334,14 @@ const RfqListScreen: React.FC<{
     setTimeFilter('All Time');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusToken]);
+
+  // Keeps this list's own Filter-by-Time control in sync with Home's
+  // "Procurement at a Glance" period whenever it changes, so the card and
+  // this table never disagree — the buyer can still change it afterward.
+  useEffect(() => {
+    if (initialPeriod) setTimeFilter(initialPeriod);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPeriod]);
 
   const filtered = useMemo(() => {
     if (exactPrFilter) {
@@ -777,7 +791,7 @@ const RfqDetailScreen: React.FC<{
 // Root component
 // ============================================================
 
-const RfqReceived: React.FC<RfqReceivedProps> = ({ SA_RUNTIME, focusRfqId, focusSearch, focusToken, onStartNegotiation }) => {
+const RfqReceived: React.FC<RfqReceivedProps> = ({ SA_RUNTIME, focusRfqId, focusSearch, focusToken, onStartNegotiation, initialPeriod }) => {
   const [rows, setRows] = useState<RfqListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -828,6 +842,7 @@ const RfqReceived: React.FC<RfqReceivedProps> = ({ SA_RUNTIME, focusRfqId, focus
           onOpen={setSelectedRfqId}
           focusSearch={focusSearch}
           focusToken={focusToken}
+          initialPeriod={initialPeriod}
         />
       )}
     </div>

@@ -10,7 +10,33 @@ interface ApprovedRfqsHomeProps {
    * same hand-off PR detail's "Evaluate RFQ" uses) — reused as-is, nothing
    * new built for "RFQ/award details". */
   onOpenRfq: (args: { prId: string; rfqId: string }) => void;
+  /** Applied invisibly (no extra toolbar control here) when set — used by
+   * Home's "Approved RFQs" card so this embedded table always shows exactly
+   * the rows that card's own count query matched for the selected period. */
+  activePeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
 }
+
+type TimeFilter = 'All Time' | 'Today' | 'This Week' | 'This Month' | 'This Year';
+
+const inTimeFilter = (dateStr: string | null, filter: TimeFilter): boolean => {
+  if (filter === 'All Time') return true;
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  if (filter === 'Today') return d.toDateString() === now.toDateString();
+  if (filter === 'This Week') {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(now.getDate() - now.getDay());
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    return d >= start && d < end;
+  }
+  if (filter === 'This Month') return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  if (filter === 'This Year') return d.getFullYear() === now.getFullYear();
+  return true;
+};
 
 // Same palette as the rest of this product's procurement screens.
 const TEAL = {
@@ -108,12 +134,13 @@ interface ApprovedRfqsHomeComponent extends React.FC<ApprovedRfqsHomeProps> {
   Metadata: ComponentMetadata;
 }
 
-const ApprovedRfqsHome: React.FC<ApprovedRfqsHomeProps> = ({ SA_RUNTIME, onOpenRfq }) => {
+const ApprovedRfqsHome: React.FC<ApprovedRfqsHomeProps> = ({ SA_RUNTIME, onOpenRfq, activePeriod }) => {
   const [rows, setRows] = useState<ApprovedRfqRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const effectivePeriod: TimeFilter = activePeriod || 'All Time';
 
   useEffect(() => {
     let cancelled = false;
@@ -136,15 +163,17 @@ const ApprovedRfqsHome: React.FC<ApprovedRfqsHomeProps> = ({ SA_RUNTIME, onOpenR
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (r) =>
+    return rows.filter((r) => {
+      if (!inTimeFilter(r.awarded_quote_date, effectivePeriod)) return false;
+      if (!q) return true;
+      return (
         r.rfq_id.toLowerCase().includes(q) ||
         r.pr_id.toLowerCase().includes(q) ||
         (r.material_desc || r.material_id).toLowerCase().includes(q) ||
         (r.awarded_vendor_name || r.awarded_vendor_id || '').toLowerCase().includes(q)
-    );
-  }, [rows, search]);
+      );
+    });
+  }, [rows, search, effectivePeriod]);
 
   if (loading) {
     return <LoadingState height={520} message="Loading approved RFQs…" variant="skeleton" size="lg" />;
@@ -246,7 +275,9 @@ const ApprovedRfqsHome: React.FC<ApprovedRfqsHomeProps> = ({ SA_RUNTIME, onOpenR
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-3 py-12 text-center text-sm" style={{ color: COLORS.text.tertiary }}>
-                  No approved RFQs match this search.
+                  {activePeriod && rows.length > 0 && !search
+                    ? `No RFQs were approved in ${activePeriod.toLowerCase()}. Try a different period from the banner above.`
+                    : 'No approved RFQs match this search.'}
                 </td>
               </tr>
             )}

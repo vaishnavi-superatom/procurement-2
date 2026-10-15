@@ -170,9 +170,25 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [error, setError] = useState<string | null>(null);
   const [expandedVendorId, setExpandedVendorId] = useState<string | null>(vendorId ?? null);
   const [openFormula, setOpenFormula] = useState<'target' | 'walkaway' | 'deal' | null>(null);
+  // "Proceed to Approval" opens this review in place (same loaded data, no
+  // re-fetch) instead of jumping straight to the approval screen — lets the
+  // buyer see the award breakdown, including any split across the suppliers
+  // they've checked below, before anything is sent forward.
+  const [showAwardReview, setShowAwardReview] = useState(false);
+  // Which suppliers the buyer has checked to negotiate with / award to — the
+  // buyer can select any supplier in the table, not only the recommended
+  // one(s). Seeded from the computed recommendation once quotes load, below.
+  const [selectedVendorIds, setSelectedVendorIds] = useState<Set<string>>(new Set());
+  // Buyer-entered award split, percent per vendor_id — only meaningful (and
+  // only shown as editable) when more than one supplier is selected. Never
+  // read from the database: there's no stored split allocation to reuse, so
+  // this is explicitly the buyer's own input, reset to an equal split
+  // whenever the selection changes.
+  const [allocations, setAllocations] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setExpandedVendorId(vendorId ?? null);
+    setShowAwardReview(false);
   }, [vendorId, rfqId]);
 
   useEffect(() => {
@@ -290,6 +306,45 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const recommendedQuotes = quotes.filter((q) => recommendedIds.has(q.quote_id));
   const leadQuote = recommendedQuotes[0] || rankedPool[0] || null;
 
+  // Seed the buyer's selection with the computed recommendation once this
+  // negotiation's quotes load — a starting point, not a lock-in; the buyer
+  // can check or uncheck any supplier in the table below.
+  useEffect(() => {
+    if (quotes.length === 0) return;
+    setSelectedVendorIds(new Set(quotes.filter((q) => recommendedIds.has(q.quote_id)).map((q) => q.vendor_id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotes]);
+
+  const toggleVendorSelection = (vendorIdToToggle: string) => {
+    setSelectedVendorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendorIdToToggle)) next.delete(vendorIdToToggle);
+      else next.add(vendorIdToToggle);
+      return next;
+    });
+  };
+
+  const selectedQuotes = quotes.filter((q) => selectedVendorIds.has(q.vendor_id));
+
+  // Reset to an equal split whenever which suppliers are selected changes —
+  // a neutral, real starting point (not invented numbers tied to any quote)
+  // that the buyer can then adjust by hand below.
+  const selectionKey = Array.from(selectedVendorIds).sort().join(',');
+  useEffect(() => {
+    const ids = Array.from(selectedVendorIds);
+    if (ids.length === 0) return;
+    const even = Math.floor(100 / ids.length);
+    const next: Record<string, number> = {};
+    ids.forEach((id, i) => {
+      next[id] = i === ids.length - 1 ? 100 - even * (ids.length - 1) : even;
+    });
+    setAllocations(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey]);
+
+  const allocationTotal = selectedQuotes.reduce((sum, q) => sum + (allocations[q.vendor_id] ?? 0), 0);
+  const allocationValid = selectedQuotes.length <= 1 || Math.round(allocationTotal) === 100;
+
   const commodityTrend = useMemo(() => {
     if (commodityPrices.length < 2) return null;
     const latest = commodityPrices[0];
@@ -366,6 +421,178 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     );
   }
 
+  if (showAwardReview) {
+    const awardQty = prLine.requested_qty;
+    const rowAward = (q: QuoteRow) => {
+      const pct = allocations[q.vendor_id] ?? 0;
+      const qty = selectedQuotes.length > 1 ? Math.round((awardQty * pct) / 100) : awardQty;
+      return { pct: selectedQuotes.length > 1 ? pct : 100, qty, value: qty * q.quoted_price };
+    };
+    const totalAwardValue = selectedQuotes.reduce((sum, q) => sum + rowAward(q).value, 0);
+
+    return (
+      <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
+        <button
+          onClick={() => setShowAwardReview(false)}
+          className="flex items-center gap-1.5 text-xs font-medium mb-3"
+          style={{ color: TEAL.base }}
+        >
+          <Icon icon="mdi:arrow-left" className="w-4 h-4" /> Back to Negotiation
+        </button>
+        <h1 className="text-xl font-bold mb-3" style={{ color: COLORS.text.primary }}>
+          Award Details — {prLine.pr_id} / {header?.rfq_id || rfqId}
+        </h1>
+
+        {/* PR + RFQ context — same box as the negotiation and approval screens */}
+        <div
+          className="rounded-lg px-4 py-2.5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5"
+          style={{ backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0' }}
+        >
+          {[
+            ['PR ID', prLine.pr_id],
+            ['Material', prLine.material_desc || prLine.material_id],
+            ['Quantity', `${prLine.requested_qty} ${prLine.unit_of_measure}`],
+            ['Plant', prLine.plant_code],
+            ['Department', prLine.requester_dept],
+            ['RFQ Status', header?.rfq_status || '—'],
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-baseline gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide" style={{ color: '#15803D' }}>{label}</span>
+              <span className="text-xs font-semibold" style={{ color: '#14532D' }}>{value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Award summary — one row per checked supplier. With more than one,
+            the percentage column is a buyer-entered split (defaulted to an
+            equal share, never read from the database), and each row sends
+            forward independently since the recorded data only ever has one
+            awarded supplier per RFQ. */}
+        <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
+          <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>
+              {selectedQuotes.length > 1 ? `Split Award — ${selectedQuotes.length} Suppliers` : 'Award Summary'}
+            </h2>
+            {selectedQuotes.length > 1 && (
+              <span className="text-xs font-semibold" style={{ color: allocationValid ? TEAL.base : '#C2410C' }}>
+                Allocation Total: {Math.round(allocationTotal)}%{!allocationValid && ' — must total 100%'}
+              </span>
+            )}
+          </div>
+
+          {selectedQuotes.length > 1 && (
+            <div className="px-4 py-2.5 flex items-start gap-2" style={{ backgroundColor: '#FFF7ED', borderBottom: '1px solid #FED7AA' }}>
+              <Icon icon="mdi:call-split" className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: '#C2410C' }} />
+              <p className="text-xs" style={{ color: '#9A3412' }}>
+                The recorded quotes don't define a quantity split across suppliers — the percentages below are entered by you,
+                starting from an equal share. Adjust them to reflect the intended split; quantity and value are computed from
+                the requisition's requested quantity and each supplier's own quoted price.
+              </p>
+            </div>
+          )}
+
+          <table className="w-full text-sm">
+            <thead>
+              <tr style={{ backgroundColor: COLORS.lightBackground }}>
+                {['Vendor', 'Compliant', 'Risk', 'Quoted Price', 'Allocation %', 'Award Qty', 'Award Value', ''].map((h) => (
+                  <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {selectedQuotes.map((q) => {
+                const { pct, qty, value } = rowAward(q);
+                return (
+                  <tr key={q.quote_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                    <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                      <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
+                      <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+                        {[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2">
+                      <span
+                        className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                        style={{
+                          backgroundColor: q.is_technically_compliant ? '#DCFCE7' : '#F1F5F9',
+                          color: q.is_technically_compliant ? '#16A34A' : '#475569',
+                        }}
+                      >
+                        {q.is_technically_compliant ? 'Yes' : 'No'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2"><RiskBadge tier={q.overall_risk} /></td>
+                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
+                    <td className="px-4 py-2">
+                      {selectedQuotes.length > 1 ? (
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={pct}
+                          onChange={(e) => {
+                            const v = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                            setAllocations((prev) => ({ ...prev, [q.vendor_id]: v }));
+                          }}
+                          className="w-16 px-2 py-1 rounded-md text-xs"
+                          style={{ border: `1px solid ${COLORS.borderGray}`, color: COLORS.text.primary }}
+                        />
+                      ) : (
+                        <span style={{ color: COLORS.text.secondary }}>100%</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{qty} {prLine.unit_of_measure}</td>
+                    <td className="px-4 py-2 font-semibold" style={{ color: COLORS.text.primary }}>{formatINR(value)}</td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        disabled={!allocationValid || qty <= 0}
+                        onClick={() => onProceedToApproval?.({ prId: prLine.pr_id, rfqId: rfqId!, materialId: prLine.material_id, vendorId: q.vendor_id })}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap"
+                        style={{
+                          backgroundColor: allocationValid && qty > 0 ? TEAL.base : COLORS.lightGray,
+                          color: allocationValid && qty > 0 ? COLORS.white : COLORS.text.tertiary,
+                          cursor: allocationValid && qty > 0 ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        <Icon icon="mdi:send-outline" className="w-3.5 h-3.5" />
+                        Send for Approval
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div className="px-4 py-3 flex items-center justify-between" style={{ backgroundColor: COLORS.lightBackground }}>
+            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>Total Award Value</span>
+            <p className="text-lg font-bold" style={{ color: TEAL.base }}>{formatINR(totalAwardValue)}</p>
+          </div>
+        </div>
+
+        {/* Supporting evidence — shown for a single selected supplier; with a
+            split award, Compliant/Risk are already in the table above instead,
+            to keep this concise. */}
+        {selectedQuotes.length === 1 && (
+          <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
+            <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+              <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supporting Evidence</h2>
+            </div>
+            <div className="px-4 py-3">
+              <ul className="text-xs space-y-1 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
+                {reasonsFor(selectedQuotes[0]).map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
       {onBack && (
@@ -401,10 +628,37 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
 
       {/* 2 & 3. Supplier comparison + recommendation */}
       <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-          <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
-          {basis === 'awarded' && (
-            <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>Recommendation reflects this RFQ's actual award.</p>
+        <div className="px-4 py-3 flex items-start justify-between gap-4" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+          <div>
+            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
+            {basis === 'awarded' && (
+              <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>Recommendation reflects this RFQ's actual award.</p>
+            )}
+            <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
+              Check one or more suppliers below to negotiate with or award to.
+            </p>
+          </div>
+          {/* Selected suppliers stay visible here while reviewing quotes below. */}
+          {selectedQuotes.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap justify-end max-w-[55%]">
+              {selectedQuotes.map((q) => (
+                <span
+                  key={q.vendor_id}
+                  className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] font-medium"
+                  style={{ backgroundColor: TEAL.tint, color: TEAL.dark }}
+                >
+                  {q.vendor_name || q.vendor_id}
+                  <button
+                    onClick={() => toggleVendorSelection(q.vendor_id)}
+                    aria-label={`Remove ${q.vendor_name || q.vendor_id} from selection`}
+                    className="flex items-center justify-center rounded-full"
+                    style={{ width: 14, height: 14 }}
+                  >
+                    <Icon icon="mdi:close" className="w-3 h-3" style={{ color: TEAL.dark }} />
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
         </div>
         {quotes.length === 0 ? (
@@ -413,7 +667,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <table className="w-full text-sm">
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'Compliant'].map((h) => (
+                {['Select', 'Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'Compliant'].map((h) => (
                   <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                     {h}
                   </th>
@@ -424,16 +678,27 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
               {quotes.map((q) => {
                 const recommended = recommendedIds.has(q.quote_id);
                 const expanded = expandedVendorId === q.vendor_id;
+                const checked = selectedVendorIds.has(q.vendor_id);
                 return (
                   <React.Fragment key={q.quote_id}>
                     <tr
                       onClick={() => recommended && setExpandedVendorId(expanded ? null : q.vendor_id)}
                       style={{
                         borderTop: `1px solid ${COLORS.lightGray}`,
-                        backgroundColor: recommended ? TEAL.tint : 'transparent',
+                        backgroundColor: checked ? TEAL.tint : 'transparent',
                         cursor: recommended ? 'pointer' : 'default',
                       }}
                     >
+                      <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleVendorSelection(q.vendor_id)}
+                          className="w-4 h-4 cursor-pointer"
+                          style={{ accentColor: TEAL.base }}
+                          aria-label={`Select ${q.vendor_name || q.vendor_id}`}
+                        />
+                      </td>
                       <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
                         <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
                         {recommended && (
@@ -468,7 +733,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                     </tr>
                     {recommended && expanded && (
                       <tr style={{ backgroundColor: TEAL.tint }}>
-                        <td colSpan={7} className="px-4 py-3">
+                        <td colSpan={8} className="px-4 py-3">
                           <div className="flex items-start gap-2">
                             <Icon icon="mdi:lightbulb-on-outline" className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: TEAL.base }} />
                             <div>
@@ -587,27 +852,27 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         </div>
       </div>
 
-      {/* Hands off the PR, RFQ, and recommended supplier to the approval view.
-          Disabled when there's no recommended supplier to approve. */}
+      {/* Hands off the PR, RFQ, and checked supplier(s) to the award review
+          below. Disabled until at least one supplier is selected. */}
       <div
         className="rounded-xl flex items-center justify-end gap-3 px-4 py-3 mt-4"
         style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
       >
         <button
-          disabled={!leadQuote}
+          disabled={selectedVendorIds.size === 0}
           onClick={() => {
-            if (!leadQuote) return;
-            onProceedToApproval?.({ prId: prLine.pr_id, rfqId: rfqId!, materialId: prLine.material_id, vendorId: leadQuote.vendor_id });
+            if (selectedVendorIds.size === 0) return;
+            setShowAwardReview(true);
           }}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold"
           style={{
-            backgroundColor: leadQuote ? TEAL.base : COLORS.lightGray,
-            color: leadQuote ? COLORS.white : COLORS.text.tertiary,
-            cursor: leadQuote ? 'pointer' : 'not-allowed',
+            backgroundColor: selectedVendorIds.size > 0 ? TEAL.base : COLORS.lightGray,
+            color: selectedVendorIds.size > 0 ? COLORS.white : COLORS.text.tertiary,
+            cursor: selectedVendorIds.size > 0 ? 'pointer' : 'not-allowed',
           }}
         >
           <Icon icon="mdi:clipboard-check-outline" className="w-4 h-4" />
-          Proceed to Approval
+          Proceed to Approval {selectedVendorIds.size > 0 && `(${selectedVendorIds.size} selected)`}
         </button>
       </div>
     </div>

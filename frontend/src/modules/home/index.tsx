@@ -205,7 +205,51 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const kpis = KPI_DATA[period];
+  // Real, period-scoped counts — queried with the exact same filters each
+  // card's own embedded table applies, so the number on the card and the
+  // row count in the table it opens can never disagree.
+  const [kpiValues, setKpiValues] = useState<Record<string, number>>({});
+  const [kpiLoading, setKpiLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setKpiLoading(true);
+      try {
+        const { start, end } = periodBounds(period);
+        const params = { start, end };
+        const [prRows, rfqRows, negRows, apprRows, vendorRows] = await Promise.all([
+          runCount(`SELECT COUNT(DISTINCT pr_id) AS cnt FROM purchase_requisitions WHERE pr_date >= @start AND pr_date < @end;`, params, SA_RUNTIME),
+          runCount(`SELECT COUNT(*) AS cnt FROM rfq_events WHERE rfq_date >= @start AND rfq_date < @end;`, params, SA_RUNTIME),
+          runCount(`SELECT COUNT(*) AS cnt FROM rfq_events WHERE rfq_status = 'In Negotiation' AND rfq_date >= @start AND rfq_date < @end;`, params, SA_RUNTIME),
+          runCount(
+            `SELECT COUNT(DISTINCT rfq.rfq_id) AS cnt FROM rfq_events rfq JOIN quotations aq ON aq.rfq_id = rfq.rfq_id AND aq.is_awarded = true WHERE rfq.rfq_status = 'Awarded' AND aq.quote_date >= @start AND aq.quote_date < @end;`,
+            params,
+            SA_RUNTIME
+          ),
+          runCount(`SELECT COUNT(*) AS cnt FROM vendor_master WHERE onboarding_date >= @start AND onboarding_date < @end;`, params, SA_RUNTIME),
+        ]);
+        if (!cancelled) {
+          setKpiValues({
+            'Total PRs Raised': prRows,
+            'RFQs received': rfqRows,
+            'Active Negotiations': negRows,
+            'Approved RFQs': apprRows,
+            'Vendors Onboarded': vendorRows,
+          });
+        }
+      } catch (err) {
+        console.error('[Home] Failed to load KPI counts', err);
+      } finally {
+        if (!cancelled) setKpiLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [period, SA_RUNTIME]);
+
+  const kpis = KPI_META.map((meta) => ({ ...meta, value: kpiValues[meta.label] }));
 
   return (
     <div
@@ -327,7 +371,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
                 {kpi.label}
               </p>
               <p className="text-2xl font-bold" style={{ color: COLORS.text.primary }}>
-                {kpi.value}
+                {kpi.value === undefined ? (kpiLoading ? '—' : 0) : kpi.value}
               </p>
             </div>
           );
@@ -344,7 +388,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
             className="mt-6 rounded-lg p-4"
             style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
           >
-            <PurchaseRequests SA_RUNTIME={SA_RUNTIME} simplifiedToolbar showRfqColumn onEvaluateRfq={handleEvaluateRfq} />
+            <PurchaseRequests SA_RUNTIME={SA_RUNTIME} simplifiedToolbar showRfqColumn activePeriod={period} onEvaluateRfq={handleEvaluateRfq} />
           </div>
         </div>
       )}
@@ -362,6 +406,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
               focusRfqId={rfqFocusId}
               focusSearch={rfqFocusSearch}
               focusToken={rfqFocusToken}
+              initialPeriod={period}
               onStartNegotiation={handleStartNegotiation}
             />
           </div>
@@ -418,7 +463,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
             className="mt-6 rounded-lg p-4"
             style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
           >
-            <Negotiations SA_RUNTIME={SA_RUNTIME} compact={false} />
+            <Negotiations SA_RUNTIME={SA_RUNTIME} compact={false} activePeriod={period} />
           </div>
         </div>
       )}
@@ -444,7 +489,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
             className="mt-6 rounded-lg p-4"
             style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
           >
-            <ApprovedRfqsHome SA_RUNTIME={SA_RUNTIME} onOpenRfq={handleEvaluateRfq} />
+            <ApprovedRfqsHome SA_RUNTIME={SA_RUNTIME} activePeriod={period} onOpenRfq={handleEvaluateRfq} />
           </div>
         </div>
       )}

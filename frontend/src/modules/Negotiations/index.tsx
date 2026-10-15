@@ -12,6 +12,11 @@ interface NegotiationsProps {
    * "Active Negotiations" card passes `compact={false}` so its embedded
    * table matches the full-width look of the RFQs/PRs tables next to it. */
   compact?: boolean;
+  /** Applied invisibly (no extra toolbar control here) when set — used by
+   * Home's "Active Negotiations" card so this embedded table always shows
+   * exactly the rows that card's own count query matched for the selected
+   * period. Left unset for the sidebar route, which shows every negotiation. */
+  activePeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
 }
 
 // Same palette as the rest of this product's procurement screens.
@@ -33,10 +38,32 @@ interface NegotiationRow {
   pr_id: string;
   material_id: string;
   material_desc: string | null;
+  rfq_date: string;
   bid_count: number;
   leading_vendor_id: string | null;
   leading_vendor_name: string | null;
 }
+
+type TimeFilter = 'All Time' | 'Today' | 'This Week' | 'This Month' | 'This Year';
+
+const inTimeFilter = (dateStr: string, filter: TimeFilter): boolean => {
+  if (filter === 'All Time') return true;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  if (filter === 'Today') return d.toDateString() === now.toDateString();
+  if (filter === 'This Week') {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(now.getDate() - now.getDay());
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    return d >= start && d < end;
+  }
+  if (filter === 'This Month') return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  if (filter === 'This Year') return d.getFullYear() === now.getFullYear();
+  return true;
+};
 
 // ============================================================
 // Query helpers — same ToolExecutor path as the other procurement modules.
@@ -87,6 +114,7 @@ SELECT
   rfq.pr_id,
   rfq.material_id,
   m.material_desc,
+  rfq.rfq_date,
   COALESCE(bc.bid_count, 0) AS bid_count,
   lead.vendor_id AS leading_vendor_id,
   lead.vendor_name AS leading_vendor_name
@@ -116,7 +144,7 @@ interface NegotiationsComponent extends React.FC<NegotiationsProps> {
   Metadata: ComponentMetadata;
 }
 
-const Negotiations: React.FC<NegotiationsProps> = ({ SA_RUNTIME, compact = true }) => {
+const Negotiations: React.FC<NegotiationsProps> = ({ SA_RUNTIME, compact = true, activePeriod }) => {
   const cellPad = compact ? 'px-3 py-1.5' : 'px-4 py-3';
   const headPad = compact ? 'px-3 py-2' : 'px-4 py-3';
   const [rows, setRows] = useState<NegotiationRow[]>([]);
@@ -145,16 +173,24 @@ const Negotiations: React.FC<NegotiationsProps> = ({ SA_RUNTIME, compact = true 
     };
   }, [SA_RUNTIME]);
 
+  // No visible time-filter control here — activePeriod is only ever set by
+  // Home's "Active Negotiations" card, applied invisibly so this table's row
+  // count always matches that card's own count query. The sidebar route gets
+  // no activePeriod and shows every open negotiation, as before.
+  const effectivePeriod: TimeFilter = activePeriod || 'All Time';
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (r) =>
+    return rows.filter((r) => {
+      if (!inTimeFilter(r.rfq_date, effectivePeriod)) return false;
+      if (!q) return true;
+      return (
         r.pr_id.toLowerCase().includes(q) ||
         (r.material_desc || r.material_id).toLowerCase().includes(q) ||
         (r.leading_vendor_name || r.leading_vendor_id || '').toLowerCase().includes(q)
-    );
-  }, [rows, search]);
+      );
+    });
+  }, [rows, search, effectivePeriod]);
 
   if (selected) {
     return (
@@ -286,7 +322,9 @@ const Negotiations: React.FC<NegotiationsProps> = ({ SA_RUNTIME, compact = true 
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={4} className="px-3 py-12 text-center text-sm" style={{ color: COLORS.text.tertiary }}>
-                  No active negotiations match this search.
+                  {activePeriod && rows.length > 0 && !search
+                    ? `No negotiations opened in ${activePeriod.toLowerCase()}. Try a different period from the banner above.`
+                    : 'No active negotiations match this search.'}
                 </td>
               </tr>
             )}

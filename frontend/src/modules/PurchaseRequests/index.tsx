@@ -23,6 +23,12 @@ interface PurchaseRequestsProps {
    * (there's no RFQ experience alongside it to hand off to) — only Home wires
    * this up to open RfqReceived focused on the PR's RFQ(s). */
   onEvaluateRfq?: (args: { prId: string; rfqId?: string }) => void;
+  /** Applied invisibly (no extra toolbar control) whenever `simplifiedToolbar`
+   * is on, so the Home "Total PRs Raised" card's embedded table always shows
+   * exactly the rows counted for that card's selected period. Ignored when
+   * `simplifiedToolbar` is off, where the visible Filter-by-Time control owns
+   * this instead. */
+  activePeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
 }
 
 // Teal accent shared with the Home dashboard, so this screen reads as part of the
@@ -445,7 +451,8 @@ const PRListScreen: React.FC<{
   onOpen: (prId: string) => void;
   simplifiedToolbar?: boolean;
   showRfqColumn?: boolean;
-}> = ({ rows, loading, error, onOpen, simplifiedToolbar = true, showRfqColumn = false }) => {
+  activePeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
+}> = ({ rows, loading, error, onOpen, simplifiedToolbar = true, showRfqColumn = false, activePeriod }) => {
   const [search, setSearch] = useState('');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('All Time');
   const [groupBy, setGroupBy] = useState<GroupBy>('None');
@@ -457,10 +464,15 @@ const PRListScreen: React.FC<{
   const PAGE_SIZE = 100;
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
+  // In simplified-toolbar mode there's no visible Filter-by-Time control —
+  // the period comes from Home's own selector instead, applied here with the
+  // exact same inTimeFilter the KPI card's own count query matches.
+  const effectiveTimeFilter: TimeFilter = simplifiedToolbar ? (activePeriod || 'All Time') : timeFilter;
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
-      if (!simplifiedToolbar && !inTimeFilter(r.pr_date, timeFilter)) return false;
+      if (!inTimeFilter(r.pr_date, effectiveTimeFilter)) return false;
       if (simplifiedToolbar) {
         const hasRfq = Boolean(r.has_rfq);
         if (rfqFilter === "RFQ's Received" && !hasRfq) return false;
@@ -475,11 +487,11 @@ const PRListScreen: React.FC<{
         (r.plant_code || '').toLowerCase().includes(q)
       );
     });
-  }, [rows, search, timeFilter, rfqFilter, simplifiedToolbar]);
+  }, [rows, search, effectiveTimeFilter, rfqFilter, simplifiedToolbar]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, timeFilter, groupBy, rfqFilter]);
+  }, [search, effectiveTimeFilter, groupBy, rfqFilter]);
 
   const groups = useMemo(() => {
     const map = new Map<string, PRListRow[]>();
@@ -680,7 +692,9 @@ const PRListScreen: React.FC<{
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={columnCount} className={`px-4 ${showRfqColumn ? 'py-12' : 'py-8'} text-center text-sm`} style={{ color: COLORS.text.tertiary }}>
-                  No purchase requests match these filters.
+                  {simplifiedToolbar && effectiveTimeFilter !== 'All Time' && rows.length > 0
+                    ? `No purchase requests raised in ${effectiveTimeFilter.toLowerCase()}. Try a different period from the banner above.`
+                    : 'No purchase requests match these filters.'}
                 </td>
               </tr>
             )}
@@ -1035,7 +1049,7 @@ const PRDetailScreen: React.FC<{
 // Root component
 // ============================================================
 
-const PurchaseRequests: React.FC<PurchaseRequestsProps> = ({ SA_RUNTIME, simplifiedToolbar, showRfqColumn, onEvaluateRfq }) => {
+const PurchaseRequests: React.FC<PurchaseRequestsProps> = ({ SA_RUNTIME, simplifiedToolbar, showRfqColumn, onEvaluateRfq, activePeriod }) => {
   const [rows, setRows] = useState<PRListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1072,6 +1086,7 @@ const PurchaseRequests: React.FC<PurchaseRequestsProps> = ({ SA_RUNTIME, simplif
           onOpen={setSelectedPrId}
           simplifiedToolbar={simplifiedToolbar}
           showRfqColumn={showRfqColumn}
+          activePeriod={activePeriod}
         />
       )}
     </div>
