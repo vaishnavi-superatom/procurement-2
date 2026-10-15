@@ -1,5 +1,4 @@
 import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import LoadingState from '../../components/LoadingState';
 import type { ComponentMetadata } from '../../types';
@@ -410,14 +409,12 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
   // Fullscreen state
   const [isHovered, setIsHovered] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [showPortal, setShowPortal] = useState<boolean>(false);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState<boolean>(false);
   const [isTitleExpanded, setIsTitleExpanded] = useState<boolean>(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   // Inside a chat answer the table drops its own card frame and keeps its controls compact.
   const [inChat, setInChat] = useState(false);
   useLayoutEffect(() => { setInChat(!!chartContainerRef.current?.closest('.chat-answer')); }, []);
-  const portalContainerRef = useRef<HTMLDivElement>(null);
 
   const defaultConfig = DEFAULT_PROPS.config as any;
   // const columns = config.columns || defaultConfig.columns || [];
@@ -579,41 +576,39 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
 
   // Track fullscreen state changes
   useEffect(() => {
+    const d = document as any;
     const handleFullscreenChange = () => {
-      const isCurrentlyFullscreen = Boolean(document.fullscreenElement);
-      setIsFullscreen(isCurrentlyFullscreen);
-      if (!isCurrentlyFullscreen && showPortal) {
-        setShowPortal(false);
-      }
+      setIsFullscreen(
+        Boolean(d.fullscreenElement || d.webkitFullscreenElement || d.msFullscreenElement)
+      );
     };
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [showPortal]);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
 
-  // Enter fullscreen via portal
   const enterFullscreen = () => {
-    setShowPortal(true);
+    const elem = chartContainerRef.current as any;
+    if (!elem) return;
+    const request =
+      elem.requestFullscreen || elem.webkitRequestFullscreen || elem.msRequestFullscreen;
+    /* Rejects when the browser does not trust the gesture, or in an iframe
+       without `allowfullscreen`. Nothing to do but stay as we are — the table
+       is still on screen and still readable. */
+    if (request) Promise.resolve(request.call(elem)).catch(() => {});
   };
 
-  // Request fullscreen on portal after it renders
-  useEffect(() => {
-    if (showPortal && portalContainerRef.current && !isFullscreen) {
-      const timer = setTimeout(() => {
-        portalContainerRef.current?.requestFullscreen().catch((err) => {
-          console.error('Failed to enter fullscreen:', err);
-          setShowPortal(false);
-        });
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [showPortal, isFullscreen]);
-
-  // Exit fullscreen
   const exitFullscreen = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    }
+    const d = document as any;
+    if (!(d.fullscreenElement || d.webkitFullscreenElement || d.msFullscreenElement)) return;
+    const exit = d.exitFullscreen || d.webkitExitFullscreen || d.msExitFullscreen;
+    if (exit) Promise.resolve(exit.call(d)).catch(() => {});
   };
 
   // Handle Ctrl+Click on table cells for relational columns
@@ -1091,8 +1086,8 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
   // In normal mode, respect the showAllRows toggle — unless the expand button
   // is hidden entirely, in which case there's no way to reach showAllRows, so
   // default to showing everything instead of permanently capping at 3 rows.
-  const getDisplayedData = (inPortal: boolean) => {
-    if (inPortal || showAllRows || !showExpandButton) {
+  const getDisplayedData = () => {
+    if (isFullscreen || showAllRows || !showExpandButton) {
       return showPagination ? sortedData.slice(startIndex, endIndex) : sortedData;
     }
     return sortedData.slice(0, INITIAL_ROW_COUNT);
@@ -1149,17 +1144,24 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
   }
 
   // Table content component - renders the actual table UI
-  const renderTableContent = (inPortal: boolean = false) => (
+  /* The table. One of them — this is the element that goes fullscreen, rather
+     than a copy of it being rendered somewhere else to be fullscreened.
+
+     `inPortal` became `isFullscreen` rather than disappearing: here it never
+     only meant "this is the copy", it meant "this is the big view" — all rows
+     rather than three, a card frame even inside a chat answer, a scrolling
+     body. Those are still wanted, and are now asked of the thing that actually
+     knows. */
+  const renderTableContent = () => (
     <div
-      ref={inPortal ? portalContainerRef : chartContainerRef}
-      className={`card bg-base-100 overflow-hidden relative ${inChat && !inPortal ? 'rounded-none' : 'shadow-sm border border-base-300 hover:shadow-md transition-shadow duration-200'} ${
-        inPortal ? 'w-full h-full' : ''
-      }`}
-      style={inPortal ? {
+      ref={chartContainerRef}
+      className={`card bg-base-100 overflow-hidden relative ${inChat && !isFullscreen ? 'rounded-none' : 'shadow-sm border border-base-300 hover:shadow-md transition-shadow duration-200'}`}
+      /* Only fullscreen needs a column: in place the card is as tall as its
+         content, and the browser's `:fullscreen` rule gives it the screen. */
+      style={isFullscreen ? {
         display: 'flex',
         flexDirection: 'column',
-        maxWidth: '100vw',
-        maxHeight: '100vh'
+        height: '100%',
       } : undefined}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -1175,7 +1177,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
         />
       )}
       {/* Gradient accent bar at top; a chat answer has no card frame for it to cap */}
-      {!(inChat && !inPortal) && <div
+      {!(inChat && !isFullscreen) && <div
         className="absolute top-0 left-0 right-0 h-1"
         style={{
           background: `linear-gradient(90deg, ${COLORS.primary}, ${COLORS.primary}80)`
@@ -1183,7 +1185,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
       ></div>}
 
       {/* Fullscreen button - shows on hover (enter) or when in fullscreen (exit) */}
-      {(isHovered || isFullscreen || inPortal) && (
+      {(isHovered || isFullscreen) && (
         <button
           onClick={isFullscreen ? exitFullscreen : enterFullscreen}
           className="absolute top-2 right-1 z-10"
@@ -1194,11 +1196,11 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
       )}
 
       {/* Header */}
-      <div className={inChat && !inPortal ? 'px-4 md:px-5 pt-1 pb-3' : 'p-6 pb-4'}>
+      <div className={inChat && !isFullscreen ? 'px-4 md:px-5 pt-1 pb-3' : 'p-6 pb-4'}>
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0 pr-3">
             <h3
-              className={`${inChat && !inPortal ? 'text-[15px]' : 'text-lg'} font-semibold text-base-content ${isTitleExpanded ? '' : 'overflow-hidden whitespace-nowrap text-ellipsis'}`}
+              className={`${inChat && !isFullscreen ? 'text-[15px]' : 'text-lg'} font-semibold text-base-content ${isTitleExpanded ? '' : 'overflow-hidden whitespace-nowrap text-ellipsis'}`}
               title={displayTitle}
               onClick={() => setIsTitleExpanded(prev => !prev)}
             >
@@ -1206,7 +1208,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
             </h3>
             {displayDescription && (
               <p
-                className={`${inChat && !inPortal ? 'text-[13px] mt-0.5' : 'text-sm mt-1 min-h-[2.5em]'} opacity-60 ${isDescriptionExpanded ? '' : 'line-clamp-2'}`}
+                className={`${inChat && !isFullscreen ? 'text-[13px] mt-0.5' : 'text-sm mt-1 min-h-[2.5em]'} opacity-60 ${isDescriptionExpanded ? '' : 'line-clamp-2'}`}
                 onClick={() => setIsDescriptionExpanded(prev => !prev)}
               >
                 {displayDescription}
@@ -1221,7 +1223,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            {inChat && !inPortal ? (<>
+            {inChat && !isFullscreen ? (<>
               <span className="text-xs text-base-content/50 tabular-nums mr-1">
                 {showExpandButton && !showAllRows && sortedData.length > INITIAL_ROW_COUNT
                   ? `Showing ${INITIAL_ROW_COUNT} of ${sortedData.length}`
@@ -1272,9 +1274,9 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
 
       {/* Table */}
       {/* In a chat answer the rows share the text's side margins, so every part starts on one line. */}
-      <div className={`overflow-x-auto ${inChat && !inPortal ? 'px-4 md:px-5' : 'px-5'} ${inPortal ? 'flex-1 overflow-y-auto' : ''}`}>
+      <div className={`overflow-x-auto ${inChat && !isFullscreen ? 'px-4 md:px-5' : 'px-5'} ${isFullscreen ? 'flex-1 overflow-y-auto' : ''}`}>
         <table
-          className={`table w-full ${striped ? 'table-zebra' : ''} ${compact ? 'table-sm' : ''} ${inChat && !inPortal ? 'text-sm [&_td]:py-2.5 [&_th]:py-2.5' : ''}`}
+          className={`table w-full ${striped ? 'table-zebra' : ''} ${compact ? 'table-sm' : ''} ${inChat && !isFullscreen ? 'text-sm [&_td]:py-2.5 [&_th]:py-2.5' : ''}`}
           style={{ borderCollapse: 'collapse' }}
         >
           <thead>
@@ -1338,7 +1340,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
             </tr>
           </thead>
           <tbody>
-            {getDisplayedData(inPortal).map((row, rowIdx) => (
+            {getDisplayedData().map((row, rowIdx) => (
               <tr
                 key={rowIdx}
                 className={hoverable ? 'hover' : ''}
@@ -1377,7 +1379,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
       </div>
 
       {/* Show/Hide All Rows Button - only in normal mode, not in fullscreen */}
-      {!inPortal && !inChat && showExpandButton && sortedData.length > INITIAL_ROW_COUNT && (
+      {!isFullscreen && !inChat && showExpandButton && sortedData.length > INITIAL_ROW_COUNT && (
         <div className="flex items-center justify-end px-6 py-4 border-t border-base-300">
           <button
             onClick={() => {
@@ -1397,7 +1399,7 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
 
       {/* Pagination - show in fullscreen (always), when showAllRows is true, or when the
           expand button is hidden entirely (no other way to reach paginated rows then) */}
-      {(inPortal || showAllRows || !showExpandButton) && showPagination && totalPages > 1 && (
+      {(isFullscreen || showAllRows || !showExpandButton) && showPagination && totalPages > 1 && (
         <div className="flex items-center justify-between px-6 py-4 border-t border-base-300">
           <div className="text-sm opacity-60">
             Showing {startIndex + 1} to {Math.min(endIndex, sortedData.length)} of {sortedData.length} rows
@@ -1448,23 +1450,9 @@ const DynamicDataTable: React.FC<DynamicDataTableProps> = ({
     </div>
   );
 
-  return (
-    <>
-      {/* Normal rendering in place */}
-      {renderTableContent(false)}
-
-      {/* Portal rendering for fullscreen - renders at document.body level */}
-      {showPortal && createPortal(
-        <div
-          className="fixed inset-0 bg-base-100 z-[9999]"
-          style={{ isolation: 'isolate' }}
-        >
-          {renderTableContent(true)}
-        </div>,
-        document.body
-      )}
-    </>
-  );
+  /* One table, rendered where it belongs. Fullscreen is the browser taking
+     this element to the screen — not a second copy of it somewhere else. */
+  return renderTableContent();
 };
 
 // Attach metadata to component
