@@ -191,6 +191,12 @@ export interface AnswerAttachment {
 	title?: string;
 }
 
+/** The body of system.md's "## Write answer.md" section, up to the next `## ` heading. */
+export function answerLayout(instructions: string): string {
+	const m = /^##[ \t]+Write\b[^\n]*answer\.md[^\n]*\n([\s\S]*?)(?=^##[ \t]|(?![\s\S]))/m.exec(instructions);
+	return m ? m[1].trim() : '';
+}
+
 /**
  * Route the question to a domain and lay its knowledge into the workspace.
  *
@@ -428,8 +434,6 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 			}
 		} catch { /* no routing: nothing to assert */ }
 
-		// The answer format lives only in system.md (the published "Write answer.md" part), so an
-		// edit in the admin UI is the whole contract; a slip is caught by the recovery turn.
 		// Only when the composition actually changed under a live session: a normal
 		// follow-up already has the right instructions and must not be sent reading.
 		let handover = '';
@@ -459,8 +463,16 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 			if (note) files = `${note}\n\n---\n\n`;
 		} catch { /* no files with this question */ }
 
+		// The layout goes last on every question: read once at the top of a long session it was
+		// dropped, most often on follow-ups. Read from system.md, so the admin's latest edit applies.
+		let layout = '';
+		try { layout = answerLayout(fs.readFileSync(ws.pathTo(INSTRUCTIONS_FILE), 'utf-8')); } catch { /* none */ }
+		const answerMd = ws.pathTo('answer.md');
 		const prompt = `${domain}${handover}${dashboard}${files}${input.question ?? ''}\n\n`
-			+ `Before finishing, write ${ws.pathTo('answer.md')} as your instructions (system.md) describe.`;
+			+ (layout
+				? `---\n\nBefore finishing, write ${answerMd}. When your answer shows figures, use this layout:\n\n${layout}\n\n`
+					+ 'Otherwise (a clarifying question, or the details of one record), answer as the question needs.'
+				: `Before finishing, write ${answerMd} as your instructions (system.md) describe.`);
 		console.log(`[answer-agent] prompt for ${input.threadId ?? '-'}:\n${prompt}\n[answer-agent] end of prompt`);
 		return prompt;
 	},
