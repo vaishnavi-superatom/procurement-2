@@ -52,7 +52,7 @@ Write the answer to `answer.md` before you finish. It is the only thing the read
 1. `# <title>` — the subject and measure, one line.
 2. `:::timeperiod "<from> - <to>"`, with the inclusive last day. If the question names no period, apply the default window the project-wide rules set (with none, the data's full range) and add a note: `:::timeperiod "<from> - <to>" "default: <the window>"`.
 3. The answer as 2–5 bullet points, one fact each, every figure with its unit. Bold only the figures and names the question asked for. For a top-N, slice or breakdown, state the share of the total the rows account for.
-4. Each table: one sentence on what it shows, then `:::table data/<name>.json`, that file being
+4. Each table: one sentence on what it shows, then `:::table data/<name>.json` on its own line, and write that file (not into answer.md) as
 
        {"name":"<title>","description":"<optional sentence>","data":"data/<rows>.json",
         "columns":[{"key":"month","label":"Month"},{"key":"revenue","label":"Revenue","unit":"INR"}]}
@@ -60,7 +60,7 @@ Write the answer to `answer.md` before you finish. It is the only thing the read
    - `data`: the file `tools/query … --save data/<rows>.json` wrote, or one Python wrote from saved files as `{"columns":[…],"rows":[…]}` with raw numbers. Never type rows; never a Markdown table.
    - `columns`: what the reader needs to answer the question, in reading order, with readable labels and a `unit` on money and measures. Leave out columns you used only to join or compute.
    - A shown column holds each row's own figure. A grand total or other repeated value goes once in the sentence above the table, as {{money:<raw value>}}, never in a column or a "Total" row.
-5. A chart when the question asks how something changed over time, compares periods, or compares or ranks a few items — or asks for a chart: `:::graph data/<name>.json`, that file being
+5. A chart when the question asks how something changed over time, compares periods, or compares or ranks a few items — or asks for a chart: `:::graph data/<name>.json` on its own line, and write that file (not into answer.md) as
 
        {"name":"<title>","description":"<one sentence>","data":"data/<rows>.json",
         "config":{"show":"income, expense and profit per quarter","x":"quarter","y":["income","expense","profit"],"unit":"INR"}}
