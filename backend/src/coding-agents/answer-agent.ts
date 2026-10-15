@@ -95,16 +95,14 @@ const DASHBOARD_NOTE = '.dashboard-note';
 const ATTACHMENTS_NOTE = '.attachments-note';
 
 /**
- * Set when this turn's composition replaced a previous one, and read by
- * buildPrompt.
- *
- * The SDK decides `resumeId` from `_state.json` BEFORE prepare() runs, so
- * deleting that file here cannot restart the session for this turn — only the
- * next one. This turn therefore runs in a session whose context still holds the
- * PREVIOUS domain's instructions while the new one is already on disk, so the turn
- * prompt has to say "re-read it".
+ * Set when this turn's composition replaced a previous one (another domain, or an admin edit).
+ * prepare() then ends the codex session, so the turn starts fresh on the new instructions and
+ * buildPrompt carries the chat's previous question instead of the old domain's whole context.
  */
 const SWITCH_MARKER = '.graph-switched';
+/** The thread's last question and its answer's title, for the note a fresh session gets. */
+const LAST_QUESTION = '.last-question';
+const EARLIER_NOTE = '.earlier-note';
 
 /** The domain holding the parts every other domain gets. */
 const SHARED_DOMAIN = 'shared';
@@ -252,12 +250,10 @@ async function composeDomain(ws: Workspace, question: string, access: BridgeAcce
 
 		await ws.write(INSTRUCTIONS_FILE, `${basePrompt(access)}\n\n${comp.prompt}\n`);
 
-		// A live codex session was given the OLD instructions and cannot be told
-		// they changed, so a different composition has to start a new session.
-		// Deleting the state makes the NEXT turn start clean; the marker makes THIS
-		// turn re-read the file it was not given. A first turn has no stale session
-		// to correct, so it gets neither.
-		if (replaced) {
+		// A changed composition starts a new codex session: the old one would carry the previous
+		// instructions and results into every call. The SDK reads _state.json after prepare(), so
+		// this turn already starts fresh. A recovery turn keeps its session: it holds the results.
+		if (replaced && !opts.recovery) {
 			if (hadDomain) fs.writeFileSync(ws.pathTo(SWITCH_MARKER), decision.domainName);
 			fs.rmSync(ws.pathTo('_state.json'), { force: true });
 		}
@@ -368,6 +364,17 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 		// system.md fallback: a thread created before the rename would otherwise
 		// keep reading the instructions it was composed with weeks ago.
 		// A recovery turn keeps them: its answer is built from the files this question already wrote.
+		// What this chat asked last, kept for a fresh session's note (answer.md is cleared below).
+		if (!input.recovery) {
+			let earlier = '';
+			try {
+				const question = fs.readFileSync(ws.pathTo(LAST_QUESTION), 'utf-8').trim();
+				const title = /^#\s+(.+)$/m.exec(fs.readFileSync(ws.pathTo('answer.md'), 'utf-8'))?.[1]?.trim();
+				if (question) earlier = `"${question}"${title ? ` — answered as "${title}"` : ''}`;
+			} catch { /* first question, or no answer written */ }
+			fs.writeFileSync(ws.pathTo(EARLIER_NOTE), earlier);
+			fs.writeFileSync(ws.pathTo(LAST_QUESTION), input.question ?? '');
+		}
 		if (!input.recovery) for (const stale of ['input', 'AGENTS.md', 'out/answer.json', 'answer.md', 'data', '.query-results', 'sql']) {
 			fs.rmSync(ws.pathTo(stale), { force: true, recursive: ['data', 'input', '.query-results', 'sql'].includes(stale) });
 		}
@@ -434,18 +441,14 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 			}
 		} catch { /* no routing: nothing to assert */ }
 
-		// Only when the composition actually changed under a live session: a normal
-		// follow-up already has the right instructions and must not be sent reading.
+		// A fresh session (the composition changed) knows nothing of this chat: say what it asked last.
 		let handover = '';
 		try {
 			const marker = ws.pathTo(SWITCH_MARKER);
 			if (fs.existsSync(marker)) {
-				const to = fs.readFileSync(marker, 'utf-8').trim();
 				fs.rmSync(marker, { force: true });
-				handover = `This question is about a different area, so your instructions were replaced: `
-					+ `run \`cat system.md\` and work from that${to ? ` (domain: ${to})` : ''}. `
-					+ 'Anything you remember from earlier in this conversation about which tables, keys or '
-					+ 'definitions to use no longer applies.\n\n';
+				const earlier = fs.readFileSync(ws.pathTo(EARLIER_NOTE), 'utf-8').trim();
+				if (earlier) handover = `Earlier in this chat the person asked ${earlier}. Use it only if this question refers to it.\n\n`;
 			}
 		} catch { /* no marker: ordinary turn */ }
 
