@@ -1,0 +1,13 @@
+# Environment variables (contains database credentials)
+.env
+
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/

@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+// publish — put the dashboard in front of readers. Refuses any resolver you have not run, or ran and then edited.
+//
+//   publish        (no arguments)
+//
+// The only tool that changes what a reader sees. It refuses more often than it
+// succeeds, and every refusal is actionable: a resolver nobody ran, a resolver
+// edited since it was run, a program that does not compile.
+const { post, programDir } = require('./_bridge.js');
+
+if (process.argv[2] === '-h' || process.argv[2] === '--help') {
+  console.log('publish — put the dashboard in front of readers.\nNo arguments. Refuses any resolver you have not run, or ran and then edited.');
+  process.exit(0);
+}
+
+post('/dash/publish', { programDir: programDir() }).then((p) => {
+  if (!p) return;
+  if (p.error) { console.error(String(p.error)); process.exit(1); }
+  const r = p.result;
+  console.log(r.summary);
+  if (!r.published) {
+    if (r.violations && r.violations.length) {
+      for (const v of r.violations) {
+        console.log('  ' + v.file + ':' + v.line + '  ' + v.detail);
+      }
+    }
+    process.exit(1);
+  }
+  for (const f of r.files) console.log('  ' + f);
+});

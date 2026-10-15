@@ -1,0 +1,11 @@
+{
+  "watch": ["src"],
+  "ext": "ts,json",
+  "ignore": [
+    "duckdb/**",
+    "uploads/**",
+    "**/*.duckdb",
+    "**/*.duckdb.wal",
+    "**/*.meta.json"
+  ]
+}

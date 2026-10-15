@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# find-concept — search this project's concepts.
+#
+#   find-concept                       list every concept (name, kind, aliases)
+#   find-concept "booking amount"      search name, aliases and bodies
+#   find-concept "a" "b"               several terms in one call
+#   find-concept --kind invariant      only that kind
+#   find-concept --limit 20 "vendor"   more matches per term (default 10)
+#
+# Prints a plain table. Use get-concept "<name>" for a full body.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "find-concept: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --kind)  args+=(--data-urlencode "kind=${2:-}");  shift 2 ;;
+    --limit) args+=(--data-urlencode "limit=${2:-}"); shift 2 ;;
+    *)       args+=(--data-urlencode "q=$1");         shift ;;
+  esac
+done
+
+curl -sS --get "$SA_BRIDGE_URL/tools/find-concept" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"

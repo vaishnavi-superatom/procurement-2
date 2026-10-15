@@ -1,0 +1,1 @@
+CREATE INDEX "idx_threads_title_fts" ON "threads" USING gin (to_tsvector('english'::regconfig, title));

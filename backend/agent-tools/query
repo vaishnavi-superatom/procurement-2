@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# query — run read-only SQL against one source.
+#
+#   query "<source>" - <<'SQL'               the SQL on stdin, untouched by the shell
+#   SELECT ... WHERE d >= '2026-04-01'
+#   SQL
+#   query "<source>" - '{"p":"v"}' <<'SQL'   named params, used in SQL as @p; --limit N for fewer rows
+#
+# SELECT/WITH only, one statement. Prints {ref, count, returned, truncated, rows}.
+# More than 25 rows: all of them go to data/<ref>.json, ready for :::table, and the first 5 print.
+# The SQL may also be the second argument; a heredoc keeps quotes intact. Sources: tools/sources.
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help|'') sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "query: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+source_arg="$1"; sql_arg="${2:-}"; shift 2 || true
+# "-": the SQL comes on stdin. Passed as an argument it crosses the agent's own
+# quoting and then the shell's, and single quotes inside it were silently lost.
+if [ "$sql_arg" = "-" ]; then sql_arg=$(cat); fi
+args=(--data-urlencode "source=$source_arg" --data-urlencode "sql=$sql_arg")
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --limit) args+=(--data-urlencode "limit=${2:-}"); shift 2 ;;
+    *)       args+=(--data-urlencode "params=$1");    shift ;;
+  esac
+done
+
+# First, before the query can take long: the harness stops waiting after a few
+# seconds, and what it then hands back was an EMPTY string — read as a failed
+# query and re-run (measured: twice in one answer, 20s each). This line makes a
+# still-running query look like one.
+echo "query running — results print below when it finishes; if nothing follows yet, it is still running: wait for it, do not re-run it."
+
+# 300s matches the data bridge's own limit, so nothing that would have returned
+# is cut short here. Without it a slow query just hangs and, if something kills
+# the command first, prints NOTHING — which reads as "no rows" to the caller and
+# has been answered as such.
+body=$(mktemp)
+trap 'rm -f "$body"' EXIT
+set +e
+curl -sS --get --max-time 300 "$SA_BRIDGE_URL/tools/query" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}" > "$body"
+rc=$?
+set -e
+if [ $rc -eq 28 ]; then
+  echo "query: exceeded 300s and was cancelled — no rows were returned. Narrow the date window, aggregate in SQL, or filter harder. This is NOT an empty result." >&2
+  exit 28
+fi
+
+# A large result printed in full flooded the agent's view (90 rows ≈ 6k tokens,
+# cut off), so it re-ran the query just to see it. Above the threshold the rows
+# go to a table file in the answer's own format and only a sample prints.
+python3 - "$body" <<'PY'
+import json, re, sys, time, os
+raw = open(sys.argv[1], encoding='utf-8').read()
+try:
+    res = json.loads(raw)
+except ValueError:
+    sys.stdout.write(raw)                      # an error or usage message: as is
+    sys.exit(0)
+rows = res.get('rows') if isinstance(res, dict) else None
+if not isinstance(rows, list) or len(rows) <= 25:
+    sys.stdout.write(raw + ('' if raw.endswith('\n') else '\n'))
+    sys.exit(0)
+keys = []
+for r in rows:
+    for k in (r or {}):
+        if k not in keys: keys.append(k)
+def label(k):
+    w = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', re.sub(r'[_-]+', ' ', k)).strip()
+    return w[:1].upper() + w[1:]
+name = res.get('ref') or f"query-{int(time.time())}"
+path = f"data/{name}.json"
+os.makedirs('data', exist_ok=True)
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump({'columns': [{'key': k, 'label': label(k)} for k in keys], 'rows': rows}, f, ensure_ascii=False)
+out = {k: v for k, v in res.items() if k != 'rows'}
+out['file'] = path
+out['note'] = f"All {len(rows)} returned rows are in {path}, ready for :::table; the first 5 are shown here."
+out['rows'] = rows[:5]
+print(json.dumps(out, indent=2, ensure_ascii=False))
+PY
+exit $rc

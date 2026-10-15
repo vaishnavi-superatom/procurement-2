@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# semantic — the project's governed metrics; ask a model before deriving a number in SQL.
+#
+#   semantic models                        every model, one line each
+#   semantic manifest <model>              its metrics, dimensions and filters
+#   semantic search "<text>"               metrics matching some wording
+#   semantic describe <model> <name>       one metric or field in full
+#   semantic explain '<query json>'        the SQL it would run, and why
+#   semantic run '<query json>'            run it; prints like query
+#
+# A query is {"model","metrics":[],"dimensions":[],"filters":[{"field":"dataset.field","op":"=","value":...}]}.
+# --source <id> picks the source when several are connected.
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help|'') sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "semantic: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+verb="$1"; shift
+args=(--data-urlencode "verb=$verb")
+[ -n "${SA_DASHBOARD_ID:-}" ] && args+=(--data-urlencode "dashboard=$SA_DASHBOARD_ID")
+
+rest=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source) args+=(--data-urlencode "source=${2:-}"); shift 2 ;;
+    *)        rest+=("$1"); shift ;;
+  esac
+done
+
+case "$verb" in
+  manifest)                 args+=(--data-urlencode "model=${rest[0]:-}") ;;
+  describe)                 args+=(--data-urlencode "model=${rest[0]:-}" --data-urlencode "name=${rest[1]:-}") ;;
+  search)                   args+=(--data-urlencode "text=${rest[*]:-}") ;;
+  explain|run|validate)     args+=(--data-urlencode "query=${rest[0]:-}") ;;
+esac
+
+body=$(mktemp "$PWD/.semantic-response.XXXXXX" 2>/dev/null || mktemp)
+trap 'rm -f "$body"' EXIT
+curl -sS --get --max-time 300 "$SA_BRIDGE_URL/tools/semantic" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}" > "$body"
+"${SA_NODE:-node}" "$(dirname "$0")/_print.js" "$body"

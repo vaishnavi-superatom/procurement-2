@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# get-schema — a table's columns, or one column, in full.
+#
+#   get-schema "trp_trn_booking"             the table: what it is, key, joins, columns
+#   get-schema "trp_trn_booking.Amount"      one column, with sample values
+#   get-schema "<source>.<table>.<column>"   pin the source when a name repeats
+#   get-schema "a.b" "c.d"                   several paths in one call
+#   get-schema --json "trp_trn_booking"      machine-readable, for jq
+#
+# Paths come from find-schema.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "get-schema: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --json)    args+=(--data-urlencode "json=1"); shift ;;
+    *)         args+=(--data-urlencode "path=$1"); shift ;;
+  esac
+done
+
+curl -sS --get "$SA_BRIDGE_URL/tools/get-schema" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"

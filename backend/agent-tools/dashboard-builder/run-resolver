@@ -1,0 +1,59 @@
+#!/usr/bin/env node
+// run-resolver — <name> '{"param":"value"}': run one resolver against the real source and print the rows. The name only, not a path. Nothing is believable until this has printed it.
+//
+//   run-resolver revenue
+//   run-resolver revenue '{"branch":"Hyderabad"}'
+//
+// The verification step: running it is what makes a panel publishable — the
+// server records the columns it returned and the hash of the file that returned
+// them. There is no way to assert the same thing without running it.
+const { post, programDir } = require('./_bridge.js');
+
+/** Rows any one call prints. Fixed; the agent cannot change it. */
+const MAX_ROWS = 30;
+
+const name = process.argv[2];
+if (!name || name === '-h' || name === '--help') {
+  console.error("usage: run-resolver <name> '{\"param\":\"value\"}'");
+  console.error('');
+  console.error('The resolver name only — not a path, not a file name.');
+  process.exit(name ? 0 : 2);
+}
+
+let params = {};
+if (process.argv[3]) {
+  try { params = JSON.parse(process.argv[3]); }
+  catch (e) {
+    console.error('params must be one JSON object in single quotes: ' + String(e.message || e));
+    process.exit(2);
+  }
+}
+
+post('/dash/run-resolver', { programDir: programDir(), name, params }).then((p) => {
+  if (!p) return;
+  if (!p.success) {
+    console.error('[' + (p.code || 'ERROR') + '] ' + p.error);
+    process.exit(1);
+  }
+  const r = p.result;
+  // `data`, not `rows` — that is what runResolver returns. The agent must READ
+  // the rows before wiring a panel, so printing them is the point.
+  const rows = r.data || [];
+  console.log(JSON.stringify({
+    columns: (r.columns || []).map((c) => c.name),
+    rowCount: r.meta.rowCount,
+    truncated: r.meta.truncated,
+    rows: rows.slice(0, MAX_ROWS),
+    shown: Math.min(rows.length, MAX_ROWS),
+  }, null, 2));
+  if (r.meta.totalRows > r.meta.rowCount) {
+    console.log('');
+    console.log('CUT TO ' + r.meta.rowCount + ' OF ' + r.meta.totalRows + ' ROWS. The limit is fixed.');
+    console.log('Unless this is a detail table showing its top rows, aggregate so the answer fits.');
+  }
+  if (r.meta.rowCount === 0) {
+    console.log('');
+    console.log('ZERO ROWS. Before wiring a panel to this: is that genuinely the answer,');
+    console.log('or is a filter wrong, a value spelled differently, or a NULL sentinel in play?');
+  }
+});

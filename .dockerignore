@@ -1,0 +1,25 @@
+# Build context for the Dockerfile: source only, never secrets or runtime data.
+.git
+**/node_modules
+**/dist
+**/venv
+**/__pycache__
+
+# Secrets / per-deployment config (passed at run time via docker-compose)
+**/.env
+**/.env.*
+backend/.proxy-id
+
+# Backend runtime data (named volumes in docker-compose.yml)
+backend/duckdb
+backend/uploads
+backend/scripts-store
+backend/tmp
+backend/logs
+backend/llm-usage-logs
+backend/user-prompt-req-errors
+backend/_model-bench
+**/*.log
+database/chromadb/logs
+
+analysis

@@ -1,0 +1,1 @@
+ALTER TABLE "answer_validations" ADD COLUMN "question" text;

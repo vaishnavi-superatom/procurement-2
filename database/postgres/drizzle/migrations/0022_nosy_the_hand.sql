@@ -1,0 +1,2 @@
+ALTER TABLE "conversation_traces" ADD COLUMN "type" varchar(20) DEFAULT 'chat_agent' NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_conversation_traces_conversation_id_type" ON "conversation_traces" USING btree ("conversation_id","type");

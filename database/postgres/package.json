@@ -1,0 +1,47 @@
+{
+  "name": "project-data-postgres",
+  "version": "1.0.0",
+  "description": "Project Data PostgreSQL Database - Shared across all projects",
+  "main": "src/project-data-db/drizzle-db.ts",
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/run-migrations.ts",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "script:delete-user-conversations": "tsx scripts/delete-user-conversations.ts",
+    "script:delete-script-recipes": "tsx scripts/delete-script-recipes.ts",
+    "script:seed-menus": "tsx scripts/seed-menus.ts",
+    "db:repair-ledger": "tsx scripts/repair-migration-ledger.ts"
+  },
+  "keywords": [
+    "postgres",
+    "drizzle",
+    "database"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.15.0",
+  "dependencies": {
+    "@types/pg": "^8.15.6",
+    "chromadb": "^1.8.1",
+    "chromadb-default-embed": "^2.14.0",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "drizzle-kit": "^0.31.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "@protobufjs/utf8": "^1.1.1",
+      "esbuild": "^0.28.1",
+      "protobufjs": "^7.6.3",
+      "sharp": "^0.35.4"
+    }
+  }
+}

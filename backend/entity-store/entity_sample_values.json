@@ -1,0 +1,26 @@
+[
+  {
+    "entity_type": "customer name",
+    "id_field": "customer.id",
+    "value_field": "customer.companyname",
+    "full_dump": true,
+    "note": "Placeholder sample values — replace with a real dump for this account before loading.",
+    "row_count": 2,
+    "sample_values": [
+      { "id": 1, "value": "Example Customer A" },
+      { "id": 2, "value": "Example Customer B" }
+    ]
+  },
+  {
+    "entity_type": "employee name",
+    "id_field": "employee.id",
+    "value_field": "employee.firstname || ' ' || employee.lastname",
+    "full_dump": true,
+    "note": "Placeholder sample values — replace with a real dump for this account before loading.",
+    "row_count": 2,
+    "sample_values": [
+      { "id": 1, "value": "Example Employee One" },
+      { "id": 2, "value": "Example Employee Two" }
+    ]
+  }
+]

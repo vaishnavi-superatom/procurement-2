@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# get-concept — print the full body of one or more concepts.
+#
+#   get-concept "booking invoice amount"      one concept, plus what it requires
+#   get-concept "a" "b"                       several at once
+#   get-concept --invariants                  the rules that apply to every question
+#
+# Names come from find-concept; aliases work too, and a clear typo is corrected.
+# Anything a concept requires is included, marked as such.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "get-concept: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --invariants) args+=(--data-urlencode "invariants=1"); shift ;;
+    *)            args+=(--data-urlencode "name=$1");      shift ;;
+  esac
+done
+
+curl -sS --get "$SA_BRIDGE_URL/tools/get-concept" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"

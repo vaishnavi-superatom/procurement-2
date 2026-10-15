@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+// validate — compile the program and report what is wrong. Cheaper than publishing to find out.
+//
+//   validate       (no arguments)
+const { post, programDir } = require('./_bridge.js');
+
+if (process.argv[2] === '-h' || process.argv[2] === '--help') {
+  console.log('validate — compile the program and report what is wrong.\nNo arguments. Cheaper than publishing to find out.');
+  process.exit(0);
+}
+
+post('/dash/validate', { programDir: programDir() }).then((p) => {
+  if (!p) return;
+  if (p.error) { console.error(String(p.error)); process.exit(1); }
+  const r = p.result;
+  if (r.valid) {
+    console.log('valid — ' + r.resolvers.length + ' resolver(s), view compiles (' + r.viewBytes + ' bytes)');
+    for (const res of r.resolvers) {
+      if (res.errors && res.errors.length) console.log('  ' + res.name + ': ' + res.errors.join('; '));
+    }
+    return;
+  }
+  console.log('INVALID');
+  for (const v of r.violations) {
+    console.log('  ' + v.file + ':' + v.line + '  ' + v.rule);
+    console.log('      ' + v.detail);
+    if (v.fix) console.log('      fix: ' + v.fix);
+  }
+  process.exit(1);
+});

@@ -1,0 +1,49 @@
+{
+  "name": "chromadb-knowledge-base",
+  "version": "1.0.0",
+  "description": "ChromaDB knowledge base sync with PostgreSQL using TypeScript",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/sync.ts",
+    "sync": "tsx src/sync.ts --sync",
+    "sync:reset": "tsx src/sync.ts --sync --reset",
+    "query": "tsx src/sync.ts --query",
+    "stats": "tsx src/sync.ts --stats",
+    "start:chroma": "echo 'Starting ChromaDB server...' && chroma run --host localhost --port 8000"
+  },
+  "keywords": [
+    "chromadb",
+    "vector-database",
+    "embeddings",
+    "semantic-search",
+    "postgresql"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "chromadb": "^1.8.1",
+    "chromadb-default-embed": "^2.14.0",
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "@types/pg": "^8.10.9",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp",
+      "esbuild",
+      "protobufjs"
+    ],
+    "overrides": {
+      "@protobufjs/utf8": "^1.1.1",
+      "protobufjs": "^7.6.3",
+      "sharp": "^0.35.4"
+    }
+  }
+}

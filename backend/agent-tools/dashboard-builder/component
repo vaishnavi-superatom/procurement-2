@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+// component — <Name>: what a dashboard component does and the props it takes. Look one up before you import it.
+//
+//   component KPICard
+const { post } = require('./_bridge.js');
+
+const name = process.argv[2];
+if (!name || name === '-h' || name === '--help') {
+  console.error('usage: component <Name>');
+  console.error('');
+  console.error('The full list is in your instructions, one line each. This gives the');
+  console.error('props and the caveats of one you have already chosen.');
+  process.exit(name ? 0 : 2);
+}
+
+post('/dash/component', { name }).then((p) => {
+  if (!p) return;
+  if (p.error) { console.error(p.error); process.exit(1); }
+  console.log(p.result.text);
+});

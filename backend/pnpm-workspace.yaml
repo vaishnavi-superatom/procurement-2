@@ -1,0 +1,17 @@
+# pnpm 10 reads dependency overrides from here (the "pnpm.overrides" field in
+# package.json is ignored by pnpm >=10). Values mirror package.json — keep in sync.
+overrides:
+  sharp: ^0.35.4
+  "@protobufjs/utf8": ^1.1.1
+  body-parser: ^2.3.0
+  # >=5.0.12 fixes GHSA-6j4f-fj2g-mc7p, GHSA-qhr7-859c-m2p7, GHSA-q2hr-2g5m-vwhr
+  brace-expansion: ^5.0.12
+  esbuild: ^0.28.1
+  form-data: ^4.0.6
+  path-to-regexp: ^8.4.0
+  picomatch: ^2.3.2
+  protobufjs: ^7.6.3
+  qs: ^6.16.0
+  # >=8.10.2 fixes the Sep 2026 undici advisories (WebSocket, cache, retry, TLS, decompression)
+  undici: ^8.11.2
+  uuid: ^11.1.1

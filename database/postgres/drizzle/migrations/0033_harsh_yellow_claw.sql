@@ -1,0 +1,1 @@
+ALTER TABLE "graph_routes" ADD COLUMN "gaps" jsonb;

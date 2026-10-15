@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# find-kb — list every knowledge-base note: id, type, title.
+#
+#   find-kb        the whole list (it is short — read it, do not search it)
+#
+# Notes hold rules and context the data does not: how a measure is meant to be
+# read, what never to sum, known quirks. Then: get-kb <id> ... for a note in full.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "find-kb: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+case "${1:-}" in
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+curl -sS --get "$SA_BRIDGE_URL/tools/find-kb" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"}

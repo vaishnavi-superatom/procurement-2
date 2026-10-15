@@ -1,0 +1,13 @@
+allowBuilds:
+  esbuild: true
+  protobufjs: false
+# pnpm 10 reads dependency overrides + build-script allow-list from here (the
+# "pnpm.*" fields in package.json are ignored by pnpm >=10). Mirror package.json.
+onlyBuiltDependencies:
+  - sharp
+  - esbuild
+  - protobufjs
+overrides:
+  "@protobufjs/utf8": ^1.1.1
+  protobufjs: ^7.6.3
+  sharp: ^0.35.4

@@ -1,0 +1,75 @@
+# One isolated stack per project (e.g. a client's dev and prod on the same VM):
+#
+#   1. backend/.env        app config (same keys setup.sh writes)
+#   2. .env (repo root)    COMPOSE_PROJECT_NAME=<client>-<env>  (unique per stack)
+#                          POSTGRES_PASSWORD=<random>
+#   3. docker compose up -d --build
+#
+# Logs: docker compose logs -f backend    Restart: docker compose restart backend
+# Nothing is published on the VM: the backend only makes outbound connections.
+
+services:
+  backend:
+    build: .
+    restart: unless-stopped
+    env_file: backend/.env
+    environment:
+      # In-stack services override any localhost URLs in backend/.env.
+      PROJECT_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/sa_data
+      CHROMA_SERVER_URL: http://chromadb:8000
+      BUNDLE_DIR: ../frontend/dist/assets
+      SA_PROXY_ID_FILE: /app/backend/state/proxy-id
+    # Docker's default AppArmor profile stops codex starting its own sandbox, so the
+    # answer agent completes a run but writes nothing. Dropping it restores codex's
+    # workspace-write confinement — the layer that keeps the agent out of backend/.env.
+    # Compensating controls kept: non-root (uid 1000), zero capabilities, default seccomp.
+    security_opt:
+      - apparmor=unconfined
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    volumes:
+      - duckdb:/app/backend/duckdb
+      - uploads:/app/backend/uploads
+      - scripts-store:/app/backend/scripts-store
+      - state:/app/backend/state
+    # Lets data sources reach databases running on the VM itself (host.docker.internal).
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "14"
+
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sa_data
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sa_data"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  chromadb:
+    image: chromadb/chroma:1.0.0
+    restart: unless-stopped
+    volumes:
+      - chroma:/data
+    logging: *logging
+
+volumes:
+  pgdata:
+  chroma:
+  duckdb:
+  uploads:
+  scripts-store:
+  state:

@@ -1,0 +1,8 @@
+# Claude Code local session state (settings, worktrees) — machine-specific, never commit
+.claude
+
+# Crash dumps from Git Bash on Windows — never commit
+*.stackdump
+
+# docker compose settings (POSTGRES_PASSWORD, COMPOSE_PROJECT_NAME)
+/.env

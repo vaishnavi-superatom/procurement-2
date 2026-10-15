@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# run-resolver — run one panel of the dashboard in view, at any filter values.
+#
+#   run-resolver "<panel>"                        the panel as it stands
+#   run-resolver "<panel>" '{"from":"2026-04-01"}' with these filter values
+#
+# The same call the panel makes, with its own grants: a follow-up the panel answers
+# at other filters is one run, not its logic rebuilt in SQL. Panels are the files in
+# dashboard/data/. Prints like query; more than 25 rows go to data/<panel>.json.
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help|'') sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "run-resolver: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+# The dashboard: the one the question was asked from, else the one last copied in.
+dashboard="${SA_DASHBOARD_ID:-}"
+if [ -z "$dashboard" ] && [ -f dashboard/dashboard.json ]; then
+  dashboard=$("${SA_NODE:-node}" -e "process.stdout.write(String(require('./dashboard/dashboard.json').id||''))")
+fi
+
+args=(--data-urlencode "dashboard=$dashboard" --data-urlencode "name=$1")
+[ -n "${2:-}" ] && args+=(--data-urlencode "params=$2")
+
+body=$(mktemp "$PWD/.resolver-response.XXXXXX" 2>/dev/null || mktemp)
+trap 'rm -f "$body"' EXIT
+curl -sS --get --max-time 300 "$SA_BRIDGE_URL/tools/run-resolver" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}" > "$body"
+"${SA_NODE:-node}" "$(dirname "$0")/_print.js" "$body"

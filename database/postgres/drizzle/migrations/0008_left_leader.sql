@@ -1,0 +1,1 @@
+ALTER TABLE "project_sources" ADD COLUMN IF NOT EXISTS "semantic_model" jsonb;

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# get-kb — print knowledge-base notes in full, by id.
+#
+#   get-kb 12            one note
+#   get-kb 12 15 31      several at once
+#
+# Ids come from find-kb. Notes marked "global" are always included: they apply
+# to every question, whether or not you asked for them.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "get-kb: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)         args+=(--data-urlencode "id=$1"); shift ;;
+  esac
+done
+
+curl -sS --get "$SA_BRIDGE_URL/tools/get-kb" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"

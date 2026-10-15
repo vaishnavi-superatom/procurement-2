@@ -1,0 +1,35 @@
+[
+  {
+    "name": "example valid row filter",
+    "kind": "invariant",
+    "body": "Placeholder invariant. This is where an always-applied precondition goes — e.g. a filter that excludes non-canonical rows a raw table happens to carry (soft-deleted rows, config rows stored in a business table, etc.). Replace this with your account's real always-on rule and delete this placeholder.",
+    "returns": {
+      "type": "filter"
+    },
+    "description": "Placeholder — one line saying what 'example valid row filter' is for, shown beside every search hit."
+  },
+  {
+    "name": "example date format",
+    "kind": "invariant",
+    "body": "Placeholder invariant. This is where you'd document a non-obvious date/number encoding in the source schema (e.g. a text-stored date in a non-ISO format) and the exact expression needed to compare or sort on it safely. Replace with your account's real encoding notes.",
+    "returns": {
+      "type": "filter"
+    },
+    "description": "Placeholder — one line saying what 'example date format' is for, shown beside every search hit."
+  },
+  {
+    "name": "example formula",
+    "kind": "formula",
+    "aliases": [
+      "example metric"
+    ],
+    "body": "Placeholder formula. This is where a derived business metric is defined precisely — which tables join on what keys, which rows are excluded, and any exceptions. Replace with your account's real formula(s).",
+    "requires": [],
+    "returns": {
+      "type": "number",
+      "unit": "example"
+    },
+    "origin": "knowledge_node",
+    "description": "Placeholder — one line saying what 'example formula' is for, shown beside every search hit."
+  }
+]

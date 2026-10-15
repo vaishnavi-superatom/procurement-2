@@ -1,0 +1,14 @@
+[
+  {
+    "entity": "customer name",
+    "mapped_to": "Placeholder mapping — e.g. customer.companyname. Replace with the real table/column for this account, and a short note on anything non-obvious about reaching it."
+  },
+  {
+    "entity": "employee name",
+    "mapped_to": "Placeholder mapping — e.g. employee.firstname || ' ' || employee.lastname. Replace with the real mapping for this account."
+  },
+  {
+    "entity": "product name",
+    "mapped_to": "Placeholder mapping — e.g. item.itemname. Replace with the real mapping for this account."
+  }
+]

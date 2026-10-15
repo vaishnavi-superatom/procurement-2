@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# find-entity — find the database id behind a name, code or number in the question.
+#
+#   find-entity "PVT LTD"                     what it is, its id and the filter to use
+#   find-entity --type customer "PVT LTD"     candidates within one type, with ids
+#   find-entity "TRL KROSAKI" "NHAVA SHEVA"   several mentions in one call
+#   find-entity --limit 25 --type vendor "x"  more candidates (default 10)
+#   find-entity --types                       the entity types you can scope to
+#
+# Pass the mention verbatim — do not tidy spelling or expand abbreviations.
+# --type is a HINT, not a filter: if nothing scores well under it, every type is
+# searched, so read the [type] on each hit before using an id.
+# A value that is not indexed but has a known shape (PAN, vehicle no) comes back
+# with the column it lives in and SQL to find it.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "find-entity: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --types)   args+=(--data-urlencode "types=1"); shift ;;
+    --type)    args+=(--data-urlencode "type=${2:-}");  shift 2 ;;
+    --limit)   args+=(--data-urlencode "limit=${2:-}"); shift 2 ;;
+    *)         args+=(--data-urlencode "q=$1");         shift ;;
+  esac
+done
+
+curl -sS --get "$SA_BRIDGE_URL/tools/find-entity" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# query — run read-only SQL against one source.
+#
+#   query "<source>" - <<'SQL'               the SQL on stdin, untouched by the shell
+#   SELECT ... WHERE d >= '2026-04-01'
+#   SQL
+#   query "<source>" --file sql/<name>.sql   the SQL from a file, when the shell mangles it
+#   options anywhere: --param name=value (or '{"p":"v"}'), --limit N, --save data/<name>.json
+#   query --wait <id>                        the result of a query still running, by the id it printed
+#
+# The implementation is common-win/tool.js, shared with Windows: one parser, one
+# behaviour on every OS. pwd -P follows the workspace's tools/ link to this folder.
+here=$(cd "$(dirname "$0")" && pwd -P)
+exec "${SA_NODE:-node}" "$here/../common-win/tool.js" query "$@"

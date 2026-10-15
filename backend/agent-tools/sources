@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# sources — the data sources this run can query.
+#
+#   sources        toolId, name, type, what it holds
+#
+# The table list is NOT here: tools/find-schema and tools/get-schema serve it.
+#
+# Use the toolId exactly as printed: tools/query "<toolId>" "<sql>".
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "sources: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+case "${1:-}" in
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+curl -sS --get "$SA_BRIDGE_URL/tools/sources" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"}

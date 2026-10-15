@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# find-schema — find which table and column holds something.
+#
+#   find-schema "consignor"              columns whose table or column matches
+#   find-schema "booking" "amount"       several terms in one call
+#   find-schema --table trp_trn_booking  every column of one table
+#   find-schema --limit 40 "party"       more hits (default 25)
+#
+# Prints paths: <table>.<column>  type  description.
+# Then: get-schema "<table>" for the whole table, or "<table>.<column>" for one.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "find-schema: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --table)   args+=(--data-urlencode "table=${2:-}"); shift 2 ;;
+    --limit)   args+=(--data-urlencode "limit=${2:-}"); shift 2 ;;
+    *)         args+=(--data-urlencode "q=$1");         shift ;;
+  esac
+done
+
+curl -sS --get "$SA_BRIDGE_URL/tools/find-schema" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"

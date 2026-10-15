@@ -1,0 +1,72 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@superatomai/sdk-web": "^0.0.6",
+    "@tailwindcss/vite": "^4.1.16",
+    "@tiptap/extension-image": "^3.30.5",
+    "@tiptap/extension-link": "^3.30.5",
+    "@tiptap/extension-placeholder": "^3.30.5",
+    "@tiptap/extension-table": "^3.30.5",
+    "@tiptap/extension-table-cell": "^3.30.5",
+    "@tiptap/extension-table-header": "^3.30.5",
+    "@tiptap/extension-table-row": "^3.30.5",
+    "@tiptap/extension-text-align": "^3.30.5",
+    "@tiptap/extension-underline": "^3.30.5",
+    "@tiptap/pm": "^3.30.5",
+    "@tiptap/react": "^3.30.5",
+    "@tiptap/starter-kit": "^3.30.5",
+    "daisyui": "^5.5.5",
+    "echarts": "^6.1.0",
+    "echarts-for-react": "^3.0.2",
+    "marked": "^17.0.1",
+    "mobx": "^6.15.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-hook-form": "^7.66.0",
+    "react-router-dom": "^7.9.5",
+    "tailwindcss": "^4.1.16"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@iconify/react": "^6.0.2",
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "eslint": "^9.36.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.22",
+    "globals": "^16.4.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.45.0",
+    "vite": "^7.3.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "@babel/core": "^7.29.6",
+      "ajv": "^6.14.0",
+      "brace-expansion@1": "^1.1.21",
+      "brace-expansion@2": "^2.1.7",
+      "flatted": "^3.4.2",
+      "js-yaml": "^4.3.1",
+      "linkify-it": "^5.0.2",
+      "markdown-it": "^14.2.0",
+      "minimatch@3": "^3.1.4",
+      "minimatch@9": "^9.0.7",
+      "nanoid": "^3.3.18",
+      "picomatch": "^4.0.4",
+      "postcss": "^8.5.23",
+      "react-router": "^8.3.0",
+      "rollup": "^4.59.0"
+    }
+  }
+}

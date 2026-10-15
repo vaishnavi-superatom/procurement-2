@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+// inventory — what this dashboard already contains and what it was last asked for. Run it first, every time.
+//
+//   inventory      (no arguments)
+const { post, dashboardId } = require('./_bridge.js');
+
+if (process.argv[2] === '-h' || process.argv[2] === '--help') {
+  console.log('inventory — what this dashboard already contains and what it was last asked for.\nNo arguments. Run it first, every time.');
+  process.exit(0);
+}
+
+post('/dash/inventory', { dashboardId: dashboardId() }).then((p) => {
+  if (!p) return;
+  if (p.error) { console.error(String(p.error)); process.exit(1); }
+  console.log(JSON.stringify(p.result, null, 2));
+});

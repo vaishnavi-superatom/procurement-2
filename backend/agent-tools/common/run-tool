@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# run-tool — run one of this project's pre-built business tools.
+#
+#   run-tool                                 list the tools and their parameters
+#   run-tool "<id>" '{"param":"value"}'      run one, with its parameters as JSON
+#
+# These compute things the project defines once (a report, a reconciliation);
+# prefer one over re-deriving the same logic in SQL. Prints the tool's JSON result.
+set -euo pipefail
+
+[ -n "${SA_BRIDGE_URL:-}" ] || { echo "run-tool: SA_BRIDGE_URL is not set — this run has no backend." >&2; exit 2; }
+
+case "${1:-}" in
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+args=()
+[ -n "${1:-}" ] && args+=(--data-urlencode "tool=$1")
+[ -n "${2:-}" ] && args+=(--data-urlencode "params=$2")
+
+curl -sS --get "$SA_BRIDGE_URL/tools/run-tool" \
+  ${SA_CONTEXT_TOKEN:+-H "x-sa-context: $SA_CONTEXT_TOKEN"} \
+  "${args[@]}"
