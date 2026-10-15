@@ -3,6 +3,7 @@ import { Icon } from '@iconify/react';
 import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../../design-system/tokens';
 import PurchaseRequests from '../PurchaseRequests';
+import RfqReceived from '../RfqReceived';
 
 interface HomeProps {
   SA_RUNTIME?: any;
@@ -83,7 +84,29 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
   const [period, setPeriod] = useState<Period>('This Month');
   const [open, setOpen] = useState(false);
   const [showPRList, setShowPRList] = useState(false);
+  const [showRfqList, setShowRfqList] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const rfqBlockRef = useRef<HTMLDivElement>(null);
+
+  // Scenario 2: a PR's "Evaluate RFQ(s)" opens the RFQ experience focused on
+  // its linked RFQ. focusToken forces RfqReceived to re-jump even if the same
+  // PR/RFQ is evaluated again after navigating back.
+  const [rfqFocusId, setRfqFocusId] = useState<string | undefined>(undefined);
+  const [rfqFocusSearch, setRfqFocusSearch] = useState<string | undefined>(undefined);
+  const [rfqFocusToken, setRfqFocusToken] = useState(0);
+
+  const handleEvaluateRfq = ({ prId, rfqId }: { prId: string; rfqId?: string }) => {
+    setRfqFocusId(rfqId);
+    setRfqFocusSearch(prId);
+    setRfqFocusToken((t) => t + 1);
+    setShowRfqList(true);
+  };
+
+  useEffect(() => {
+    if (rfqFocusToken > 0) {
+      rfqBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [rfqFocusToken]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -163,16 +186,23 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
       <div className="grid grid-cols-5 gap-3 mt-4">
         {kpis.map((kpi) => {
           const isPRCard = kpi.label === 'Total PRs Raised';
+          const isRfqCard = kpi.label === 'RFQs received';
+          const isExpanded = (isPRCard && showPRList) || (isRfqCard && showRfqList);
+          const toggle = isPRCard
+            ? () => setShowPRList((s) => !s)
+            : isRfqCard
+              ? () => setShowRfqList((s) => !s)
+              : undefined;
           return (
             <div
               key={kpi.label}
-              onClick={isPRCard ? () => setShowPRList((s) => !s) : undefined}
+              onClick={toggle}
               className="min-w-0 rounded-lg p-3"
               style={{
                 backgroundColor: COLORS.white,
-                border: `1px solid ${isPRCard && showPRList ? TEAL.base : TEAL.border}`,
+                border: `1px solid ${isExpanded ? TEAL.base : TEAL.border}`,
                 boxShadow: SHADOWS.card,
-                cursor: isPRCard ? 'pointer' : 'default',
+                cursor: toggle ? 'pointer' : 'default',
               }}
             >
               <div className="flex items-start justify-between mb-2">
@@ -182,9 +212,9 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
                 >
                   <Icon icon={kpi.icon} className="w-4 h-4" style={{ color: kpi.iconColor }} />
                 </div>
-                {isPRCard ? (
+                {toggle ? (
                   <Icon
-                    icon={showPRList ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                    icon={isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
                     className="w-3.5 h-3.5"
                     style={{ color: COLORS.text.tertiary }}
                   />
@@ -213,7 +243,25 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
             className="mt-6 rounded-lg p-4"
             style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
           >
-            <PurchaseRequests SA_RUNTIME={SA_RUNTIME} simplifiedToolbar />
+            <PurchaseRequests SA_RUNTIME={SA_RUNTIME} simplifiedToolbar showRfqColumn onEvaluateRfq={handleEvaluateRfq} />
+          </div>
+        </div>
+      )}
+
+      {/* RFQs received → RFQ list, inline below, same screen (same pattern as Total PRs Raised) */}
+      {showRfqList && (
+        <div className="mt-8" ref={rfqBlockRef}>
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <RfqReceived
+              SA_RUNTIME={SA_RUNTIME}
+              focusRfqId={rfqFocusId}
+              focusSearch={rfqFocusSearch}
+              focusToken={rfqFocusToken}
+            />
           </div>
         </div>
       )}

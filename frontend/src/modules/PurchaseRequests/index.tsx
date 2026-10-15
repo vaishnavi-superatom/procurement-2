@@ -7,10 +7,22 @@ import LoadingState from '../../components/LoadingState';
 interface PurchaseRequestsProps {
   SA_RUNTIME?: any;
   /** Swaps the list toolbar's Filter-by-Time + Group-by controls for a single
-   * All PRs / RFQ Created / RFQ Not Created filter, alongside search. Off by
-   * default — only the Home "Total PRs Raised" instance turns this on, so
-   * the standalone Purchase Requests page is unaffected. */
+   * All PRs / RFQ's Received / RFQ's Not Received filter, alongside search.
+   * Defaults to on (both the standalone Purchase Requisitions page and the
+   * Home "Total PRs Raised" instance use this toolbar); pass `false` to get
+   * the original Filter-by-Time + Group-by toolbar instead. */
   simplifiedToolbar?: boolean;
+  /** Shows the RFQ status badge as its own table column. Off by default (the
+   * standalone Purchase Requisitions page relies on the RFQ filter instead,
+   * per its own column spec) — only the Home "Total PRs Raised" instance
+   * turns this on, to keep that view exactly as it already is. */
+  showRfqColumn?: boolean;
+  /** Fired when "Evaluate RFQ" / "Evaluate RFQ's" is clicked in a PR's detail
+   * view, with the linked RFQ id when there's exactly one. Left undefined on
+   * the standalone Purchase Requests page, where the button stays a no-op
+   * (there's no RFQ experience alongside it to hand off to) — only Home wires
+   * this up to open RfqReceived focused on the PR's RFQ(s). */
+  onEvaluateRfq?: (args: { prId: string; rfqId?: string }) => void;
 }
 
 // Teal accent shared with the Home dashboard, so this screen reads as part of the
@@ -91,7 +103,6 @@ interface RfqRow {
   awarded_price: number | null;
   rfq_status: 'Awarded' | 'In Negotiation';
   negotiation_rounds: number;
-  vendor_name: string | null;
 }
 
 interface CandidateVendor {
@@ -112,12 +123,12 @@ const GROUP_BY_OPTIONS: GroupBy[] = ['None', 'Department', 'Material', 'Urgency'
 
 // Whether a PR has a linked rfq_events row — real relationship, not inferred
 // from source_type or any other field. See has_rfq in PR_LIST_QUERY.
-type RfqFilter = 'All PRs' | 'RFQ Created' | 'RFQ Not Created';
-const RFQ_FILTER_OPTIONS: RfqFilter[] = ['All PRs', 'RFQ Created', 'RFQ Not Created'];
+type RfqFilter = 'All PRs' | "RFQ's Received" | "RFQ's Not Received";
+const RFQ_FILTER_OPTIONS: RfqFilter[] = ['All PRs', "RFQ's Received", "RFQ's Not Received"];
 const RFQ_FILTER_DESCRIPTIONS: Record<RfqFilter, string> = {
   'All PRs': 'Every purchase request.',
-  'RFQ Created': 'PRs linked to an RFQ.',
-  'RFQ Not Created': 'PRs without an RFQ yet.',
+  "RFQ's Received": 'PRs linked to an RFQ.',
+  "RFQ's Not Received": 'PRs without an RFQ yet.',
 };
 
 // ============================================================
@@ -415,7 +426,7 @@ const METADATA: ComponentMetadata = {
   description: 'Purchase requisitions list and detail view, sourced from the live purchase_requisitions/inventory/rfq_events data',
   category: 'Dashboard',
   keywords: ['purchase', 'requests', 'pr', 'requisition', 'rfq', 'procurement'],
-  dashboard: { label: 'Purchase Requests', icon: 'mdi:cart-outline', order: 1 },
+  dashboard: { label: 'Purchase Requisitions', icon: 'mdi:cart-outline', order: 1 },
   props: {},
 };
 
@@ -433,7 +444,8 @@ const PRListScreen: React.FC<{
   error: string | null;
   onOpen: (prId: string) => void;
   simplifiedToolbar?: boolean;
-}> = ({ rows, loading, error, onOpen, simplifiedToolbar }) => {
+  showRfqColumn?: boolean;
+}> = ({ rows, loading, error, onOpen, simplifiedToolbar = true, showRfqColumn = false }) => {
   const [search, setSearch] = useState('');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('All Time');
   const [groupBy, setGroupBy] = useState<GroupBy>('None');
@@ -451,8 +463,8 @@ const PRListScreen: React.FC<{
       if (!simplifiedToolbar && !inTimeFilter(r.pr_date, timeFilter)) return false;
       if (simplifiedToolbar) {
         const hasRfq = Boolean(r.has_rfq);
-        if (rfqFilter === 'RFQ Created' && !hasRfq) return false;
-        if (rfqFilter === 'RFQ Not Created' && hasRfq) return false;
+        if (rfqFilter === "RFQ's Received" && !hasRfq) return false;
+        if (rfqFilter === "RFQ's Not Received" && hasRfq) return false;
       }
       if (!q) return true;
       return (
@@ -501,7 +513,11 @@ const PRListScreen: React.FC<{
   // are currently materialized by "Load more".
   const groupTotals = useMemo(() => new Map(groups.map(([name, groupRows]) => [name, groupRows.length])), [groups]);
 
-  const columnCount = simplifiedToolbar ? 8 : 7;
+  const columnCount = showRfqColumn ? 8 : 7;
+  // Compact padding/row-height for the standalone page only — the Home
+  // "Total PRs Raised" table (showRfqColumn=true) keeps its original sizing.
+  const cellPad = showRfqColumn ? 'px-4 py-3' : 'px-3 py-2';
+  const pageTitle = showRfqColumn ? 'Purchase Requests' : 'Purchase Requisitions';
 
   if (loading) {
     return <LoadingState height={520} message="Loading purchase requests…" variant="skeleton" size="lg" />;
@@ -527,7 +543,7 @@ const PRListScreen: React.FC<{
       <div className="flex items-center justify-between flex-wrap gap-3 mb-4 flex-shrink-0">
         <div>
           <h1 className="text-xl font-bold" style={{ color: COLORS.text.primary }}>
-            Purchase Requests
+            {pageTitle}
           </h1>
           <p className="text-xs mt-0.5" style={{ color: COLORS.text.secondary }}>
             {filtered.length.toLocaleString('en-IN')} of {rows.length.toLocaleString('en-IN')} requests
@@ -580,24 +596,24 @@ const PRListScreen: React.FC<{
           {/* Fixed column widths so content never triggers a table-wide
               column-width recalculation (e.g. on row hover). */}
           <colgroup>
-            <col style={{ width: '110px' }} />
+            <col style={{ width: showRfqColumn ? '110px' : '95px' }} />
             <col />
-            <col style={{ width: '130px' }} />
-            <col style={{ width: '80px' }} />
-            <col style={{ width: '90px' }} />
-            {simplifiedToolbar && <col style={{ width: '110px' }} />}
-            <col style={{ width: '100px' }} />
-            <col style={{ width: '120px' }} />
+            <col style={{ width: showRfqColumn ? '130px' : '115px' }} />
+            <col style={{ width: showRfqColumn ? '80px' : '70px' }} />
+            <col style={{ width: showRfqColumn ? '90px' : '80px' }} />
+            {showRfqColumn && <col style={{ width: '110px' }} />}
+            <col style={{ width: showRfqColumn ? '100px' : '140px' }} />
+            <col style={{ width: showRfqColumn ? '120px' : '105px' }} />
           </colgroup>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: COLORS.lightBackground }}>
             <tr>
-              {(simplifiedToolbar
+              {(showRfqColumn
                 ? ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ', 'Required By', 'Value']
-                : ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'Required By', 'Value']
+                : ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ Required By', 'Value']
               ).map((h) => (
                 <th
                   key={h}
-                  className="text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wide truncate"
+                  className={`text-left ${cellPad} text-[11px] font-semibold uppercase tracking-wide truncate`}
                   style={{ color: COLORS.text.secondary, borderBottom: `1px solid ${TEAL.border}` }}
                 >
                   {h}
@@ -612,7 +628,7 @@ const PRListScreen: React.FC<{
                   <tr>
                     <td
                       colSpan={columnCount}
-                      className="px-4 py-2 text-xs font-semibold"
+                      className={`${cellPad} text-xs font-semibold`}
                       style={{ backgroundColor: TEAL.tint, color: TEAL.base }}
                     >
                       {groupName} <span style={{ color: COLORS.text.secondary, fontWeight: 400 }}>({groupTotals.get(groupName) ?? groupRows.length})</span>
@@ -631,10 +647,10 @@ const PRListScreen: React.FC<{
                       backgroundColor: hoveredId === row.pr_id ? TEAL.tint : 'transparent',
                     }}
                   >
-                    <td className="px-4 py-3 font-semibold truncate" style={{ color: COLORS.text.primary }}>
+                    <td className={`${cellPad} font-semibold truncate`} style={{ color: COLORS.text.primary }}>
                       {row.pr_id}
                     </td>
-                    <td className="px-4 py-3 truncate" style={{ color: COLORS.text.primary }}>
+                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.primary }}>
                       {row.first_material_desc || row.first_material_id}
                       {row.material_count > 1 && (
                         <span className="ml-1.5 text-[11px]" style={{ color: COLORS.text.tertiary }}>
@@ -642,28 +658,28 @@ const PRListScreen: React.FC<{
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 truncate" style={{ color: COLORS.text.secondary }}>{row.requester_dept}</td>
-                    <td className="px-4 py-3 truncate" style={{ color: COLORS.text.secondary }}>{row.plant_code}</td>
-                    <td className="px-4 py-3"><UrgencyBadge urgency={row.urgency} /></td>
-                    {simplifiedToolbar && (
-                      <td className="px-4 py-3"><RfqBadge hasRfq={Boolean(row.has_rfq)} /></td>
+                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>{row.requester_dept}</td>
+                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>{row.plant_code}</td>
+                    <td className={cellPad}><UrgencyBadge urgency={row.urgency} /></td>
+                    {showRfqColumn && (
+                      <td className={cellPad}><RfqBadge hasRfq={Boolean(row.has_rfq)} /></td>
                     )}
-                    <td className="px-4 py-3 truncate" style={{ color: COLORS.text.secondary }}>{formatDate(row.required_date)}</td>
-                    <td className="px-4 py-3 font-medium truncate" style={{ color: COLORS.text.primary }}>{formatINR(row.total_value)}</td>
+                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>{formatDate(row.required_date)}</td>
+                    <td className={`${cellPad} font-medium truncate`} style={{ color: COLORS.text.primary }}>{formatINR(row.total_value)}</td>
                   </tr>
                 ))}
               </React.Fragment>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={columnCount} className="px-4 py-12 text-center text-sm" style={{ color: COLORS.text.tertiary }}>
+                <td colSpan={columnCount} className={`px-4 ${showRfqColumn ? 'py-12' : 'py-8'} text-center text-sm`} style={{ color: COLORS.text.tertiary }}>
                   No purchase requests match these filters.
                 </td>
               </tr>
             )}
             {hasMore && (
               <tr>
-                <td colSpan={columnCount} className="px-4 py-3 text-center">
+                <td colSpan={columnCount} className={`${cellPad} text-center`}>
                   <button
                     onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
                     className="px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors duration-150"
@@ -685,7 +701,12 @@ const PRListScreen: React.FC<{
 // Detail screen
 // ============================================================
 
-const PRDetailScreen: React.FC<{ prId: string; onBack: () => void; SA_RUNTIME: any }> = ({ prId, onBack, SA_RUNTIME }) => {
+const PRDetailScreen: React.FC<{
+  prId: string;
+  onBack: () => void;
+  SA_RUNTIME: any;
+  onEvaluateRfq?: (args: { prId: string; rfqId?: string }) => void;
+}> = ({ prId, onBack, SA_RUNTIME, onEvaluateRfq }) => {
   const [lines, setLines] = useState<PRLine[] | null>(null);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [rfqs, setRfqs] = useState<RfqRow[]>([]);
@@ -730,9 +751,8 @@ const PRDetailScreen: React.FC<{ prId: string; onBack: () => void; SA_RUNTIME: a
             : Promise.resolve([]),
           runTool<RfqRow>(
             `
-            SELECT rfq.*, v.vendor_name
+            SELECT rfq.*
             FROM rfq_events rfq
-            LEFT JOIN vendor_master v ON v.vendor_id = rfq.awarded_vendor_id
             WHERE rfq.pr_id = @prId
             ORDER BY rfq.rfq_date DESC;
             `,
@@ -873,7 +893,7 @@ const PRDetailScreen: React.FC<{ prId: string; onBack: () => void; SA_RUNTIME: a
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                  {['RFQ ID', 'Status', 'Vendors Invited', 'Quotes Received', 'Awarded Vendor', 'Awarded Price'].map((h) => (
+                  {['ID', 'Status', 'Vendors Invited', 'Quotes Received'].map((h) => (
                     <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                       {h}
                     </th>
@@ -897,12 +917,67 @@ const PRDetailScreen: React.FC<{ prId: string; onBack: () => void; SA_RUNTIME: a
                     </td>
                     <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.vendors_invited}</td>
                     <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.quotes_received}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.vendor_name || '—'}</td>
-                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(r.awarded_price)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            <div className="px-4 py-3" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+              {/* No-op when onEvaluateRfq isn't wired up (e.g. the standalone
+                  Purchase Requests page, which has no RFQ experience alongside it). */}
+              <button
+                onClick={() => onEvaluateRfq?.({ prId: header.pr_id, rfqId: rfqs.length === 1 ? rfqs[0].rfq_id : undefined })}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold"
+                style={{ backgroundColor: TEAL.base, color: COLORS.white }}
+              >
+                <Icon icon="mdi:clipboard-check-outline" className="w-4 h-4" />
+                {rfqs.length === 1 ? 'Evaluate RFQ' : "Evaluate RFQ's"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* For a PR with no RFQ yet, sourcing is the next action — shown right
+            after the line items, ahead of Available Stock. Once an RFQ exists,
+            this is skipped (covered by the RFQ Status section above instead),
+            so Available Stock naturally follows it there, unchanged. */}
+        {rfqs.length === 0 && (
+          <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
+            <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+              <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Sourcing</h2>
+            </div>
+            {candidateVendors.length > 0 ? (
+              <div className="px-4 py-3">
+                <p className="text-xs mb-3" style={{ color: COLORS.text.secondary }}>
+                  No RFQ exists yet. Candidate vendors for {header.material_group || 'this material group'}:
+                </p>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr style={{ backgroundColor: COLORS.lightBackground }}>
+                      {['Vendor', 'Type', 'Specialization', 'Location', 'Payment Terms'].map((h) => (
+                        <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {candidateVendors.map((v) => (
+                      <tr key={v.vendor_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                        <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{v.vendor_name}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.vendor_type}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.category_specialization}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.city}, {v.state}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.payment_terms}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="px-4 py-4 text-xs" style={{ color: COLORS.text.tertiary }}>
+                No existing RFQ and no active vendors found for this material group.
+              </p>
+            )}
           </div>
         )}
 
@@ -944,79 +1019,6 @@ const PRDetailScreen: React.FC<{ prId: string; onBack: () => void; SA_RUNTIME: a
             </table>
           )}
         </div>
-
-        <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-          <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Sourcing</h2>
-          </div>
-          {rfqs.length > 0 ? (
-            <table className="w-full text-sm">
-              <thead>
-                <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                  {['RFQ ID', 'Status', 'Vendors Invited', 'Quotes Received', 'Awarded Vendor', 'Awarded Price'].map((h) => (
-                    <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rfqs.map((r) => (
-                  <tr key={r.rfq_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{r.rfq_id}</td>
-                    <td className="px-4 py-2">
-                      <span
-                        className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                        style={{
-                          backgroundColor: r.rfq_status === 'Awarded' ? '#DCFCE7' : '#FFEDD5',
-                          color: r.rfq_status === 'Awarded' ? '#16A34A' : '#EA580C',
-                        }}
-                      >
-                        {r.rfq_status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.vendors_invited}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.quotes_received}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.vendor_name || '—'}</td>
-                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(r.awarded_price)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : candidateVendors.length > 0 ? (
-            <div className="px-4 py-3">
-              <p className="text-xs mb-3" style={{ color: COLORS.text.secondary }}>
-                No RFQ exists yet. Candidate vendors for {header.material_group || 'this material group'}:
-              </p>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                    {['Vendor', 'Type', 'Specialization', 'Location', 'Payment Terms'].map((h) => (
-                      <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {candidateVendors.map((v) => (
-                    <tr key={v.vendor_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                      <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{v.vendor_name}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.vendor_type}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.category_specialization}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.city}, {v.state}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.payment_terms}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="px-4 py-4 text-xs" style={{ color: COLORS.text.tertiary }}>
-              No existing RFQ and no active vendors found for this material group.
-            </p>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -1026,7 +1028,7 @@ const PRDetailScreen: React.FC<{ prId: string; onBack: () => void; SA_RUNTIME: a
 // Root component
 // ============================================================
 
-const PurchaseRequests: React.FC<PurchaseRequestsProps> = ({ SA_RUNTIME, simplifiedToolbar }) => {
+const PurchaseRequests: React.FC<PurchaseRequestsProps> = ({ SA_RUNTIME, simplifiedToolbar, showRfqColumn, onEvaluateRfq }) => {
   const [rows, setRows] = useState<PRListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1054,9 +1056,16 @@ const PurchaseRequests: React.FC<PurchaseRequestsProps> = ({ SA_RUNTIME, simplif
   return (
     <div style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
       {selectedPrId ? (
-        <PRDetailScreen prId={selectedPrId} onBack={() => setSelectedPrId(null)} SA_RUNTIME={SA_RUNTIME} />
+        <PRDetailScreen prId={selectedPrId} onBack={() => setSelectedPrId(null)} SA_RUNTIME={SA_RUNTIME} onEvaluateRfq={onEvaluateRfq} />
       ) : (
-        <PRListScreen rows={rows} loading={loading} error={error} onOpen={setSelectedPrId} simplifiedToolbar={simplifiedToolbar} />
+        <PRListScreen
+          rows={rows}
+          loading={loading}
+          error={error}
+          onOpen={setSelectedPrId}
+          simplifiedToolbar={simplifiedToolbar}
+          showRfqColumn={showRfqColumn}
+        />
       )}
     </div>
   );

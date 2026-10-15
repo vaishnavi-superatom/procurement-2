@@ -12,6 +12,7 @@ import DynamicPieChart from './shared-modules/DynamicPieChart';
 import DatabaseOverview from './modules/DatabaseOverview';
 import Home from './modules/home';
 import PurchaseRequests from './modules/PurchaseRequests';
+import RfqReceived from './modules/RfqReceived';
 import CatalogClassification from './modules/CatalogClassification';
 import InventoryCapital from './modules/InventoryCapital';
 import Negotiations from './modules/Negotiations';
@@ -72,6 +73,7 @@ const COMPONENTS = {
     DatabaseOverview,
     Home,              // → Home button (/home)
     PurchaseRequests,  // → /dash/PurchaseRequests
+    RfqReceived,       // embedded in Home via the "RFQs received" card — no dashboard route
     CatalogClassification, // → /dash/CatalogClassification
     InventoryCapital,  // → /dash/InventoryCapital
     Negotiations,      // → /dash/Negotiations
