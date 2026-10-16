@@ -47,12 +47,14 @@ const TEAL = {
 };
 
 // ============================================================
-// Real data shape — one row per RFQ genuinely awarded (rfq_events.rfq_status
-// = 'Awarded' is the only real "approved" status this schema has; there is
-// no separate approval workflow/status field). "Approval Date" uses the
-// awarded quotation's quote_date — rfq_events has no awarded/approval date
-// column of its own, so this is the closest real, recorded date for when
-// the winning offer was approved, not an invented field.
+// Real data shape — one row per RFQ that is genuinely approved: rfq_status =
+// 'Awarded' (a negotiation reaching 'Awarded' only means a winner was picked
+// — that's an evaluated/negotiated RFQ, not yet an approval) AND it has at
+// least one real purchase_orders row referencing it (purchase_orders.rfq_id).
+// That PO is the actual downstream artifact of approval, so an 'Awarded' RFQ
+// with no resulting PO is excluded — it hasn't actually been approved into
+// a purchase yet. "Approval Date" is that PO's own po_date, not an invented
+// field and not the fragile quotations.is_awarded join used previously.
 // ============================================================
 
 interface ApprovedRfqRow {
@@ -65,7 +67,7 @@ interface ApprovedRfqRow {
   awarded_price: number | null;
   rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   rfq_date: string;
-  awarded_quote_date: string | null;
+  approved_po_date: string | null;
 }
 
 const TOOL_ID = 'postgres-0fc80d2496ff_query';
@@ -95,14 +97,14 @@ SELECT
   rfq.awarded_price,
   rfq.rfq_status,
   MIN(rfq.rfq_date) AS rfq_date,
-  MIN(aq.quote_date) AS awarded_quote_date
+  MIN(po.po_date) AS approved_po_date
 FROM rfq_events rfq
+JOIN purchase_orders po ON po.rfq_id = rfq.rfq_id
 LEFT JOIN material_master m ON m.material_id = rfq.material_id
 LEFT JOIN vendor_master v ON v.vendor_id = rfq.awarded_vendor_id
-LEFT JOIN quotations aq ON aq.rfq_id = rfq.rfq_id AND aq.is_awarded = true
 WHERE rfq.rfq_status = 'Awarded'
 GROUP BY rfq.rfq_id, rfq.pr_id, rfq.material_id, rfq.awarded_vendor_id, rfq.awarded_price, rfq.rfq_status
-ORDER BY MIN(rfq.rfq_date) DESC
+ORDER BY MIN(po.po_date) DESC
 LIMIT 5000;
 `;
 
@@ -164,7 +166,7 @@ const ApprovedRfqsHome: React.FC<ApprovedRfqsHomeProps> = ({ SA_RUNTIME, onOpenR
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
-      if (!inTimeFilter(r.awarded_quote_date, effectivePeriod)) return false;
+      if (!inTimeFilter(r.approved_po_date, effectivePeriod)) return false;
       if (!q) return true;
       return (
         r.rfq_id.toLowerCase().includes(q) ||
@@ -261,7 +263,7 @@ const ApprovedRfqsHome: React.FC<ApprovedRfqsHomeProps> = ({ SA_RUNTIME, onOpenR
                 <td className="px-3 py-1.5 truncate" style={{ color: COLORS.text.primary }}>{row.material_desc || row.material_id}</td>
                 <td className="px-3 py-1.5 truncate" style={{ color: COLORS.text.secondary }}>{row.awarded_vendor_name || row.awarded_vendor_id || '—'}</td>
                 <td className="px-3 py-1.5 font-medium truncate" style={{ color: COLORS.text.primary }}>{formatINR(row.awarded_price)}</td>
-                <td className="px-3 py-1.5 truncate" style={{ color: COLORS.text.secondary }}>{formatDate(row.awarded_quote_date)}</td>
+                <td className="px-3 py-1.5 truncate" style={{ color: COLORS.text.secondary }}>{formatDate(row.approved_po_date)}</td>
                 <td className="px-3 py-1.5">
                   <span
                     className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
