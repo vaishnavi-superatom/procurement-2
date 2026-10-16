@@ -37,7 +37,6 @@ interface PRLine {
   material_id: string;
   requested_qty: number;
   unit_of_measure: string;
-  estimated_price: number;
   total_value: number;
   required_date: string;
   requester_dept: string;
@@ -45,7 +44,6 @@ interface PRLine {
   urgency: 'High' | 'Normal';
   material_desc: string | null;
   material_group: string | null;
-  standard_price: number | null;
   primary_commodity: string | null;
   commodity_pct: number | null;
 }
@@ -169,7 +167,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedVendorId, setExpandedVendorId] = useState<string | null>(vendorId ?? null);
-  const [openFormula, setOpenFormula] = useState<'target' | 'walkaway' | 'deal' | null>(null);
   // "Proceed to Approval" opens this review in place (same loaded data, no
   // re-fetch) instead of jumping straight to the approval screen — lets the
   // buyer see the award breakdown, including any split across the suppliers
@@ -206,9 +203,9 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         const [prRows, headerRows, quoteRows] = await Promise.all([
           runTool<PRLine>(
             `
-            SELECT pr.pr_id, pr.material_id, pr.requested_qty, pr.unit_of_measure, pr.estimated_price, pr.total_value,
+            SELECT pr.pr_id, pr.material_id, pr.requested_qty, pr.unit_of_measure, pr.total_value,
                    pr.required_date, pr.requester_dept, pr.plant_code, pr.urgency,
-                   m.material_desc, m.material_group, m.standard_price, m.primary_commodity, m.commodity_pct
+                   m.material_desc, m.material_group, m.primary_commodity, m.commodity_pct
             FROM purchase_requisitions pr
             LEFT JOIN material_master m ON m.material_id = pr.material_id
             WHERE pr.pr_id = @prId AND pr.material_id = @materialId
@@ -375,16 +372,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     }
     return reasons;
   };
-
-  // Pricing reference points — standard procurement negotiation methodology
-  // applied to this RFQ's real data (no pre-existing formula was found
-  // anywhere in this codebase to reuse instead; see each panel for the exact
-  // inputs used).
-  const targetPrice = prLine?.standard_price ?? null;
-  const walkawayPrice = prLine?.estimated_price ?? null;
-  const dealQty = prLine?.requested_qty ?? null;
-  const dealUnitPrice = leadQuote?.quoted_price ?? null;
-  const estimatedDealValue = dealQty != null && dealUnitPrice != null ? dealQty * dealUnitPrice : null;
 
   if (!prId || !rfqId || !materialId || !vendorId) {
     return (
@@ -785,72 +772,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           </p>
         </div>
       )}
-
-      {/* 5 & 6. Pricing reference points */}
-      <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-          <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Pricing Reference Points</h2>
-        </div>
-        <div className="flex flex-wrap items-stretch gap-4 px-4 py-3">
-          {[
-            {
-              key: 'target' as const,
-              label: 'Target Price',
-              value: targetPrice,
-              formula: "Target Price = Material Standard Price — the company's own established reference (\"should-cost\") price for this material, independent of any vendor's quote.",
-              input: `material_master.standard_price = ${formatINR(targetPrice)}`,
-              unavailable: 'No standard price is recorded for this material.',
-            },
-            {
-              key: 'walkaway' as const,
-              label: 'Walkaway Price',
-              value: walkawayPrice,
-              formula: "Walkaway Price = the Purchase Requisition's Estimated Price — the per-unit price originally budgeted and approved when this requisition was raised; the ceiling before requiring re-approval.",
-              input: `purchase_requisitions.estimated_price = ${formatINR(walkawayPrice)}`,
-              unavailable: 'No estimated price is recorded on this requisition.',
-            },
-            {
-              key: 'deal' as const,
-              label: 'Estimated Deal Value',
-              value: estimatedDealValue,
-              formula: "Estimated Deal Value = Requested Quantity × the recommended supplier's Quoted Price.",
-              input:
-                dealQty != null && dealUnitPrice != null
-                  ? `requested_qty = ${dealQty} ${prLine.unit_of_measure}  ×  quoted_price (${leadQuote?.vendor_name || leadQuote?.vendor_id || '—'}) = ${formatINR(dealUnitPrice)}`
-                  : '',
-              unavailable: 'No quotation is available yet to value this deal.',
-            },
-          ].map((m) => (
-            <div key={m.key} className="min-w-[180px]">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] uppercase tracking-wide" style={{ color: COLORS.text.tertiary }}>{m.label}</span>
-                <button onClick={() => setOpenFormula(openFormula === m.key ? null : m.key)} aria-label={`How ${m.label} is calculated`}>
-                  <Icon icon="mdi:information-outline" className="w-3.5 h-3.5" style={{ color: TEAL.base }} />
-                </button>
-              </div>
-              <p className="text-xl font-bold" style={{ color: m.value != null ? COLORS.text.primary : COLORS.text.tertiary }}>
-                {m.value != null ? formatINR(m.value) : '—'}
-              </p>
-              {openFormula === m.key && (
-                <div className="mt-2 p-2.5 rounded-lg text-[11px] leading-relaxed" style={{ backgroundColor: TEAL.tint, color: TEAL.dark, maxWidth: 280 }}>
-                  {m.value != null ? (
-                    <>
-                      <p className="font-semibold mb-1">Formula</p>
-                      <p className="mb-1.5">{m.formula}</p>
-                      <p className="font-semibold mb-1">Inputs</p>
-                      <p className="mb-1.5">{m.input}</p>
-                      <p className="font-semibold mb-1">Result</p>
-                      <p>{formatINR(m.value)}</p>
-                    </>
-                  ) : (
-                    <p>{m.unavailable} Showing the limitation instead of guessing a value.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
 
       {/* Hands off the PR, RFQ, and checked supplier(s) to the award review
           below. Disabled until at least one supplier is selected. */}

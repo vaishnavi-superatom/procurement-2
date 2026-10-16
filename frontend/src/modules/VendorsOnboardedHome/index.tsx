@@ -10,6 +10,16 @@ interface VendorsOnboardedHomeProps {
    * from Home's "This Month" etc. selector so the list opens matching what
    * the card just showed. The user can still change it here independently. */
   initialPeriod?: 'Today' | 'This Week' | 'This Month' | 'This Year';
+  /** Opens straight to this vendor's profile instead of the directory — used
+   * by the standalone Vendors Onboarded sidebar page, which has its own
+   * directory table and only wants this component for the profile/contracts
+   * views a row's click hands off to. */
+  initialVendorId?: string | null;
+  /** Called instead of resetting to this component's own directory when the
+   * buyer backs out of the top-level profile view — lets a caller with its
+   * own directory (e.g. the sidebar page above) return to that directory
+   * instead of this component's. Only used together with initialVendorId. */
+  onExitProfile?: () => void;
 }
 
 type TimeFilter = 'All Time' | 'Today' | 'This Week' | 'This Month' | 'This Year';
@@ -225,7 +235,7 @@ const ToolbarDropdown: React.FC<{ label: string; icon: string; value: string; op
   );
 };
 
-const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME, initialPeriod }) => {
+const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME, initialPeriod, initialVendorId, onExitProfile }) => {
   const [vendors, setVendors] = useState<VendorRow[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -233,7 +243,17 @@ const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME,
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(initialPeriod || 'All Time');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  const [view, setView] = useState<View>({ kind: 'directory' });
+  // Keeps this directory's own Filter by Time control in sync with Home's
+  // "Procurement at a Glance" period whenever it changes — this block stays
+  // mounted while the period dropdown changes, so without this the table
+  // would keep showing whatever period it was first opened with. The buyer
+  // can still change it afterward.
+  useEffect(() => {
+    if (initialPeriod) setTimeFilter(initialPeriod);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPeriod]);
+
+  const [view, setView] = useState<View>(initialVendorId ? { kind: 'profile', vendorId: initialVendorId } : { kind: 'directory' });
 
   const [profile, setProfile] = useState<VendorProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -402,7 +422,10 @@ const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME,
   const goBack = () => {
     if (view.kind === 'contractDetail') setView({ kind: 'contracts', vendorId: view.vendorId, filter: view.filter });
     else if (view.kind === 'contracts') setView({ kind: 'profile', vendorId: view.vendorId });
-    else if (view.kind === 'profile') setView({ kind: 'directory' });
+    else if (view.kind === 'profile') {
+      if (onExitProfile) onExitProfile();
+      else setView({ kind: 'directory' });
+    }
   };
 
   // ============================================================
