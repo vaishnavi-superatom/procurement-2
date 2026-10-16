@@ -7,10 +7,10 @@ import { capitalizeName, formatWhen, initials } from '../../utils/comment-format
 
 // Same teal accent as the rest of the RFQ screen (see index.tsx).
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 const MAX_COMMENT_LENGTH = 2000;

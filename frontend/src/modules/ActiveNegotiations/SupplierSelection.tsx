@@ -6,20 +6,15 @@ import { aiRanking, RANK_HELP, type RankedVendor, type SupplierRecommendation } 
 import { selectSupplier, type SupplierSelection } from '../../data/rfq-workflow';
 
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 const formatINR = (n: number | null | undefined): string => {
   if (n === null || n === undefined || isNaN(n)) return '—';
   return '₹' + Math.round(n).toLocaleString('en-IN');
-};
-
-const formatPct = (p: number | null | undefined): string => {
-  if (p === null || p === undefined || isNaN(p)) return '—';
-  return `${p >= 0 ? '+' : '−'}${Math.abs(p).toFixed(1)}%`;
 };
 
 const formatTime = (iso: string | null | undefined): string => {
@@ -28,7 +23,89 @@ const formatTime = (iso: string | null | undefined): string => {
   return isNaN(d.getTime()) ? '' : d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 };
 
-// T, L and AI ranks are separate columns (walkthrough, 16 Oct: "they are
+const fmtPctAbs = (p: number): string => `${Math.abs(p).toFixed(1)}%`;
+
+/** "Net 45" → 45; unparseable terms fall back to 0 so a comparison never crashes or fabricates a number. */
+const paymentDays = (terms: string): number => Number(/\d+/.exec(terms)?.[0] ?? '0');
+
+/**
+ * 3–4 concise, actionable talking points for negotiating with this specific
+ * vendor — built only from this RFQ's own quotes (rows) and this vendor's own
+ * recommendation fields (quoted price, commercial terms, delivery, the
+ * recommendation's own vs-contract/vs-historical/vs-online benchmarks, risk,
+ * OTD/quality, flags, technical note). Nothing here is invented: each point
+ * either states a real field directly or compares two real fields already
+ * present on the data. Recomputed fresh on every call, so it always reflects
+ * whichever vendor is currently picked.
+ */
+function buildNegotiationPointers(vendor: RankedVendor, rows: RankedVendor[]): string[] {
+  const points: string[] = [];
+  const others = rows.filter((r) => r.vendorId !== vendor.vendorId);
+
+  // 1. Price vs the cheapest real quote in this RFQ (only meaningful with 2+ bids).
+  if (others.length > 0) {
+    const cheapest = rows.reduce((min, r) => (r.quotedPrice < min.quotedPrice ? r : min), rows[0]);
+    if (cheapest.vendorId === vendor.vendorId) {
+      points.push(`Lowest quote received for this RFQ (${formatINR(vendor.quotedPrice)}) — a strong anchor; avoid conceding further without a clear trade-off.`);
+    } else {
+      const gapPct = ((vendor.quotedPrice - cheapest.quotedPrice) / cheapest.quotedPrice) * 100;
+      points.push(
+        `Quoted ${formatINR(vendor.quotedPrice)}, ${fmtPctAbs(gapPct)} higher than the lowest bid in this RFQ (${formatINR(cheapest.quotedPrice)} from ${cheapest.vendorName}) — use this gap to push for a lower price.`
+      );
+    }
+  }
+
+  // 2. Price vs our own contract rate, else our 12-month average, else the live market price —
+  // whichever real benchmark the recommendation actually computed, in that priority order.
+  const benchmark =
+    vendor.vsContractPct != null
+      ? { label: 'our current contract price', pct: vendor.vsContractPct }
+      : vendor.vsHistoricalAvgPct != null
+        ? { label: 'our 12-month average price', pct: vendor.vsHistoricalAvgPct }
+        : vendor.vsOnlinePct != null
+          ? { label: 'the live market price', pct: vendor.vsOnlinePct }
+          : null;
+  if (benchmark && Math.abs(benchmark.pct) >= 1) {
+    points.push(
+      benchmark.pct > 0
+        ? `${fmtPctAbs(benchmark.pct)} above ${benchmark.label} — ask them to explain the premium or move closer to it.`
+        : `Already ${fmtPctAbs(benchmark.pct)} below ${benchmark.label} — a favorable rate worth locking in before further rounds.`
+    );
+  }
+
+  // 3. Delivery vs the fastest bid in this RFQ.
+  if (others.length > 0) {
+    const fastest = rows.reduce((min, r) => (r.deliveryDays < min.deliveryDays ? r : min), rows[0]);
+    if (fastest.vendorId === vendor.vendorId) {
+      points.push(`Fastest delivery in this RFQ at ${vendor.deliveryDays} days — a point in their favor if price concessions are limited.`);
+    } else if (fastest.deliveryDays < vendor.deliveryDays) {
+      points.push(`Delivery is ${vendor.deliveryDays} days vs ${fastest.deliveryDays} days from ${fastest.vendorName} — ask whether they can match it.`);
+    }
+  }
+
+  // 4. Whichever real commercial-terms or risk signal stands out most, in priority order.
+  const longerWarranty = others.find((r) => r.warrantyMonths > vendor.warrantyMonths);
+  const longerPayment = others.find((r) => paymentDays(r.paymentTerms) > paymentDays(vendor.paymentTerms));
+  if (vendor.flags) {
+    points.push(`Flagged: ${vendor.flags} — raise this directly and confirm how they plan to address it.`);
+  } else if (vendor.overallRisk === 'High') {
+    points.push('Overall risk tier is High — consider requiring mitigations or additional guarantees before awarding.');
+  } else if (longerWarranty) {
+    points.push(`Warranty is ${vendor.warrantyMonths} months vs ${longerWarranty.warrantyMonths} months from ${longerWarranty.vendorName} — ask if they can match it.`);
+  } else if (longerPayment) {
+    points.push(`Payment terms are ${vendor.paymentTerms} vs ${longerPayment.paymentTerms} from ${longerPayment.vendorName} — negotiate for longer terms.`);
+  } else if (vendor.otdPct != null && vendor.otdPct < 90) {
+    points.push(`On-time delivery track record is ${vendor.otdPct}% — below a strong benchmark; consider a delivery-performance clause.`);
+  } else if (vendor.qualityPct != null && vendor.qualityPct < 95) {
+    points.push(`Quality acceptance rate is ${vendor.qualityPct}% — worth confirming inspection and rejection terms.`);
+  } else if (vendor.technicalNote) {
+    points.push(vendor.technicalNote);
+  }
+
+  return points.slice(0, 4);
+}
+
+// T, L and system ranks are separate columns (walkthrough, 16 Oct: "they are
 // individual columns, not combined T1 L1").
 
 /** Price rank among technically accepted vendors (L1 = lowest price). */
@@ -44,19 +121,19 @@ export const LRankBadge: React.FC<{ rank: string | null | undefined }> = ({ rank
     <span className="text-[11px]" style={{ color: COLORS.text.tertiary }}>—</span>
   );
 
-/** Place in the AI Recommendation's order: 1 = recommended, then by combined score. */
+/** Place in the System Recommendation's order: 1 = recommended, then by combined score. */
 export const AiRankBadge: React.FC<{ rank: number | null | undefined }> = ({ rank }) =>
   rank ? (
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
       style={rank === 1 ? { backgroundColor: TEAL.base, color: COLORS.white } : { backgroundColor: COLORS.lightGray, color: COLORS.text.secondary }}
-      title={rank === 1 ? 'Recommended by the AI' : undefined}
+      title={rank === 1 ? 'Recommended by the system' : undefined}
     >
       {rank === 1 && <Icon icon="mdi:creation" className="w-3 h-3" />}
       {rank}
     </span>
   ) : (
-    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the AI Recommendation to rank">
+    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the System Recommendation to rank">
       —
     </span>
   );
@@ -80,7 +157,7 @@ export const RecommendationCard: React.FC<{
         <div>
           <h2 className="text-sm font-semibold flex items-center gap-1.5" style={{ color: COLORS.text.primary }}>
             <Icon icon="mdi:creation-outline" className="w-4 h-4" style={{ color: TEAL.base }} />
-            AI Recommendation
+            System Recommendation
           </h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
             Advisory. You choose the supplier below; choosing a different one needs a short reason.
@@ -125,21 +202,32 @@ export const RecommendationCard: React.FC<{
                 </span>
               )}
             </div>
-            {rec.rationale && <p className="text-xs leading-relaxed" style={{ color: COLORS.text.primary }}>{rec.rationale}</p>}
-            {rec.considerations.length > 0 && (
-              <ul className="text-xs space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
-                {rec.considerations.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            )}
-            {!rec.agreesWithScore && (
-              <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-                Note: this is not the top combined score ({weightsText(rec)}); the reason above explains why.
-              </p>
-            )}
+            {/* Exactly up to 4 concise points, built only from rec's own real
+                fields — the rationale, then its (already-capped-at-3) real
+                considerations, then the real scoring-agreement fact as filler
+                only when there's a gap. Never invented, never padded beyond
+                what the recommendation actually returned. */}
+            {(() => {
+              const points: string[] = [];
+              if (rec.rationale) points.push(rec.rationale);
+              for (const c of rec.considerations) points.push(c);
+              if (points.length < 4) {
+                points.push(
+                  rec.agreesWithScore
+                    ? `Matches the top combined score under the ${weightsText(rec)} weighting.`
+                    : `Differs from the top combined score under the ${weightsText(rec)} weighting — see the reason above.`
+                );
+              }
+              return points.length > 0 ? (
+                <ul className="text-xs space-y-1 list-disc pl-4" style={{ color: COLORS.text.primary }}>
+                  {points.slice(0, 4).map((p, i) => (
+                    <li key={i}>{p}</li>
+                  ))}
+                </ul>
+              ) : null;
+            })()}
             <p className="text-[10px]" style={{ color: COLORS.text.tertiary }}>
-              {rec.recommendationSource === 'ai' ? 'AI recommendation' : 'Top combined score (AI unavailable)'}
+              {rec.recommendationSource === 'ai' ? 'system recommendation' : 'Top combined score (system unavailable)'}
               {rec.createdAt ? ` · ${rec.reused ? 'saved' : 'made'} ${formatTime(rec.createdAt)}` : ''}
             </p>
           </div>
@@ -162,8 +250,12 @@ export const SelectSupplierList: React.FC<{
   const rows = aiRanking(rec);
   const picked = rows.find((v) => v.vendorId === pickedVendorId) ?? null;
   const savedForPick = selection && selection.vendorId === pickedVendorId;
+  // Recomputed on every render, so it always reflects whichever vendor is
+  // currently picked — no separate effect/state needed to "update on change".
+  const pointers = picked ? buildNegotiationPointers(picked, rows) : [];
 
   return (
+    <>
     <div className="rounded-xl overflow-hidden mb-4" style={cardStyle}>
       <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
         <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Select Supplier</h2>
@@ -175,7 +267,7 @@ export const SelectSupplierList: React.FC<{
       <table className="w-full text-sm">
         <thead>
           <tr style={{ backgroundColor: COLORS.lightBackground }}>
-            {['', 'AI Rank', 'Vendor', 'T-Rank', 'L-Rank', 'Score', 'Quoted Price', 'vs our 12-mo avg', 'vs contract', 'Delivery', 'EcoVadis', 'Flags'].map((h, i) => (
+            {['', 'System Rank', 'Vendor', 'T-Rank', 'L-Rank', 'Quoted Price', 'Delivery', 'EcoVadis'].map((h, i) => (
               <th
                 key={i}
                 title={RANK_HELP[h]}
@@ -220,13 +312,9 @@ export const SelectSupplierList: React.FC<{
                 </td>
                 <td className="px-4 py-2"><TRankBadge rank={v.tRank} /></td>
                 <td className="px-4 py-2"><LRankBadge rank={v.lRank} /></td>
-                <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{v.score.toFixed(2)}</td>
                 <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>{formatINR(v.quotedPrice)}</td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatPct(v.vsHistoricalAvgPct)}</td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatPct(v.vsContractPct)}</td>
                 <td className="px-4 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{v.deliveryDays} days</td>
                 <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.ecovadisScore ?? '—'}</td>
-                <td className="px-4 py-2 text-[11px]" style={{ color: COLORS.text.secondary }}>{v.flags || '—'}</td>
               </tr>
             );
           })}
@@ -268,6 +356,26 @@ export const SelectSupplierList: React.FC<{
         />
       )}
     </div>
+
+    {picked && pointers.length > 0 && (
+      <div className="rounded-xl overflow-hidden mb-4" style={cardStyle}>
+        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+          <h2 className="text-sm font-semibold flex items-center gap-1.5" style={{ color: COLORS.text.primary }}>
+            <Icon icon="mdi:comment-quote-outline" className="w-4 h-4" style={{ color: TEAL.base }} />
+            Negotiation Pointers — {picked.vendorName}
+          </h2>
+          <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
+            Talking points from this RFQ's own quotes and benchmarks — updates as the picked supplier changes.
+          </p>
+        </div>
+        <ul className="px-4 py-3 text-xs space-y-1.5 list-disc pl-8" style={{ color: COLORS.text.primary }}>
+          {pointers.map((p, i) => (
+            <li key={i}>{p}</li>
+          ))}
+        </ul>
+      </div>
+    )}
+    </>
   );
 };
 

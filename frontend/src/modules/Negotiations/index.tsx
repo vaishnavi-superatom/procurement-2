@@ -21,10 +21,10 @@ interface NegotiationsProps {
 
 // Same palette as the rest of this product's procurement screens.
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 // ============================================================
@@ -69,7 +69,10 @@ const inTimeFilter = (dateStr: string, filter: TimeFilter): boolean => {
 // Query helpers — same ToolExecutor path as the other procurement modules.
 // ============================================================
 
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//local-tool id
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//prod-tool id
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 async function runTool<T = any>(sql: string, SA_RUNTIME: any, limit?: number): Promise<T[]> {
@@ -271,12 +274,11 @@ const Negotiations: React.FC<NegotiationsProps> = ({ SA_RUNTIME, compact = true,
           <colgroup>
             <col style={{ width: compact ? '110px' : '130px' }} />
             <col />
-            <col style={{ width: compact ? '180px' : '220px' }} />
             <col style={{ width: compact ? '120px' : '150px' }} />
           </colgroup>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: COLORS.lightBackground }}>
             <tr>
-              {['PR ID', 'Material', 'Supplier', 'Number of Bids'].map((h) => (
+              {['PR ID', 'Material', 'Number of Bids'].map((h) => (
                 <th
                   key={h}
                   className={`text-left ${headPad} text-[11px] font-semibold uppercase tracking-wide leading-tight`}
@@ -312,16 +314,13 @@ const Negotiations: React.FC<NegotiationsProps> = ({ SA_RUNTIME, compact = true,
                   <td className={`${cellPad} truncate`} style={{ color: COLORS.text.primary }}>
                     {row.material_desc || row.material_id}
                   </td>
-                  <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>
-                    {row.leading_vendor_name || row.leading_vendor_id || '—'}
-                  </td>
                   <td className={cellPad} style={{ color: COLORS.text.secondary }}>{row.bid_count}</td>
                 </tr>
               );
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-3 py-12 text-center text-sm" style={{ color: COLORS.text.tertiary }}>
+                <td colSpan={3} className="px-3 py-12 text-center text-sm" style={{ color: COLORS.text.tertiary }}>
                   {activePeriod && rows.length > 0 && !search
                     ? `No negotiations opened in ${activePeriod.toLowerCase()}. Try a different period from the banner above.`
                     : 'No active negotiations match this search.'}

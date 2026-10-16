@@ -65,7 +65,7 @@ export interface OnlinePrice {
   comparable?: boolean;
   outOfRange?: boolean;
   note?: string;
-  /** When no price: the AI's short reason for the buyer (e.g. that size is sold on quotation only). */
+  /** When no price: the system's short reason for the buyer (e.g. that size is sold on quotation only). */
   noPriceReason?: string | null;
   sources?: { title: string; url: string }[];
   cached?: boolean;
@@ -125,7 +125,7 @@ export interface SupplierRecommendation {
 }
 
 /**
- * The AI's order, used by Select Supplier and the AI Rank column: the
+ * The system's order, used by Select Supplier and the System Rank column: the
  * recommended vendor first, then the rest by combined score.
  */
 export function aiRanking(rec: SupplierRecommendation): RankedVendor[] {
@@ -134,7 +134,7 @@ export function aiRanking(rec: SupplierRecommendation): RankedVendor[] {
   return [...first, ...rest];
 }
 
-/** vendorId → AI rank (1 = recommended); empty until the AI Recommendation has run. */
+/** vendorId → system rank (1 = recommended); empty until the System Recommendation has run. */
 export const aiRankByVendor = (rec: SupplierRecommendation | null): Map<string, number> =>
   new Map((rec ? aiRanking(rec) : []).map((v, i) => [v.vendorId, i + 1]));
 
@@ -142,7 +142,7 @@ export const aiRankByVendor = (rec: SupplierRecommendation | null): Map<string, 
 export const RANK_HELP: Record<string, string> = {
   'T-Rank': 'Technical rank from evaluation: T1 meets every requirement comfortably, T4 has a small deviation',
   'L-Rank': 'Price rank among technically accepted vendors: L1 is the lowest price',
-  'AI Rank': 'Order from the AI Recommendation: 1 is the recommended vendor, the rest follow by combined score (60% price, 40% technical)',
+  'System Rank': 'Order from the System Recommendation: 1 is the recommended vendor, the rest follow by combined score (60% price, 40% technical)',
 };
 
 // The slice of the global tool executor (data/tool-executor.ts) this file uses.

@@ -36,10 +36,10 @@ interface ActiveNegotiationsProps {
 
 // Same palette as the rest of this product's procurement screens.
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 // ============================================================
@@ -52,7 +52,6 @@ interface PRLine {
   material_id: string;
   requested_qty: number;
   unit_of_measure: string;
-  estimated_price: number;
   total_value: number;
   required_date: string;
   requester_dept: string;
@@ -60,7 +59,6 @@ interface PRLine {
   urgency: 'High' | 'Normal';
   material_desc: string | null;
   material_group: string | null;
-  standard_price: number | null;
   primary_commodity: string | null;
   commodity_pct: number | null;
 }
@@ -118,7 +116,10 @@ interface CommodityPriceRow {
 // Query helpers — same ToolExecutor path as PurchaseRequests/RfqReceived.
 // ============================================================
 
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//local-tool id
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//prod-tool id
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -153,7 +154,7 @@ const METADATA: ComponentMetadata = {
   displayName: 'Show negotiation detail for a PR/RFQ',
   isDisplayComp: true,
   type: 'ActiveNegotiations',
-  description: 'Negotiation workspace for a specific PR/RFQ: supplier comparison by technical (T) and price (L) rank, single-supplier award, and pricing reference points',
+  description: 'Negotiation workspace for a specific PR/RFQ: supplier comparison by technical (T) and price (L) rank, system recommendation, and single-supplier award',
   category: 'Dashboard',
   keywords: ['negotiation', 'rfq', 'supplier', 'recommendation', 'pricing', 'procurement'],
   props: {},
@@ -189,20 +190,19 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [commodityPrices, setCommodityPrices] = useState<CommodityPriceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [openFormula, setOpenFormula] = useState<'target' | 'walkaway' | 'deal' | null>(null);
   // "Proceed to Approval" opens this review in place (same loaded data, no
   // re-fetch) instead of jumping straight to the approval screen — lets the
   // buyer see the award before anything is sent forward.
   const [showAwardReview, setShowAwardReview] = useState(false);
   // The one supplier the buyer picks to award to (product review, Oct 16:
   // "ask them to pick one"). Nothing is pre-selected — there's no
-  // recommendation until the buyer asks for the AI Recommendation.
+  // recommendation until the buyer asks for the System Recommendation.
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
   // The pick once confirmed and saved (rfq_supplier_selections); only a saved
   // pick can go to approval.
   const [selection, setSelection] = useState<SupplierSelection | null>(null);
 
-  // AI Recommendation: market study, online price, then the pick.
+  // System Recommendation: market study, online price, then the pick.
   const [studyOpen, setStudyOpen] = useState(false);
   const [market, setMarket] = useState<MarketInputs | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
@@ -382,10 +382,10 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
 
   // No built-in recommendation here: the product review (Oct 16) rejected
   // comparing on lowest price / compliance / delivery and wants nothing
-  // recommended until the buyer asks for the AI Recommendation.
+  // recommended until the buyer asks for the System Recommendation.
   const selectedQuote = quotes.find((q) => q.vendor_id === selectedVendorId) ?? null;
   const readyForApproval = !!selectedQuote && selection?.vendorId === selectedQuote.vendor_id && header?.rfq_status !== 'Awarded';
-  // Filled once the AI Recommendation has run; same order as Select Supplier.
+  // Filled once the System Recommendation has run; same order as Select Supplier.
   const aiRanks = aiRankByVendor(rec);
 
   const commodityTrend = useMemo(() => {
@@ -415,16 +415,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     }
     return reasons;
   };
-
-  // Pricing reference points — standard procurement negotiation methodology
-  // applied to this RFQ's real data (no pre-existing formula was found
-  // anywhere in this codebase to reuse instead; see each panel for the exact
-  // inputs used).
-  const targetPrice = prLine?.standard_price ?? null;
-  const walkawayPrice = prLine?.estimated_price ?? null;
-  const dealQty = prLine?.requested_qty ?? null;
-  const dealUnitPrice = selectedQuote?.quoted_price ?? null;
-  const estimatedDealValue = dealQty != null && dealUnitPrice != null ? dealQty * dealUnitPrice : null;
 
   if (!prId || !rfqId || !materialId || !vendorId) {
     return (
@@ -509,7 +499,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <table className="w-full text-sm">
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Vendor', 'T-Rank', 'L-Rank', 'AI Rank', 'Risk', 'Quoted Price', 'Award Qty', 'Award Value', ''].map((h) => (
+                {['Vendor', 'T-Rank', 'L-Rank', 'System Rank', 'Risk', 'Quoted Price', 'Award Qty', 'Award Value', ''].map((h) => (
                   <th
                     key={h}
                     title={RANK_HELP[h]}
@@ -649,14 +639,14 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         ))}
       </div>
 
-      {/* 2. Supplier comparison — T-rank, L-rank and AI rank as separate columns,
+      {/* 2. Supplier comparison — T-rank, L-rank and system rank as separate columns,
           in price order, for reading only; the pick happens in Select Supplier,
           after the recommendation. */}
       <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
         <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
           <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-            Technically accepted vendors by quoted price. T-rank and L-rank are separate; the AI rank fills in after the AI Recommendation.
+            Technically accepted vendors by quoted price. T-rank and L-rank are separate.
           </p>
           {notAcceptedCount > 0 && (
             <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
@@ -671,7 +661,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <table className="w-full text-sm">
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'T-Rank', 'L-Rank', 'AI Rank'].map((h) => (
+                {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'T-Rank', 'L-Rank'].map((h) => (
                   <th
                     key={h}
                     title={RANK_HELP[h]}
@@ -715,7 +705,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                     <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
                     <td className="px-4 py-2"><TRankBadge rank={q.t_rank} /></td>
                     <td className="px-4 py-2"><LRankBadge rank={q.l_rank} /></td>
-                    <td className="px-4 py-2"><AiRankBadge rank={aiRanks.get(q.vendor_id)} /></td>
                   </tr>
                 );
               })}
@@ -738,7 +727,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                 style={{ backgroundColor: TEAL.base, color: COLORS.white }}
               >
                 <Icon icon="mdi:creation-outline" className="w-4 h-4" />
-                AI Recommendation
+                System Recommendation
               </button>
             )}
           </div>
@@ -782,72 +771,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         </>
       )}
 
-      {/* 5 & 6. Pricing reference points */}
-      <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-          <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Pricing Reference Points</h2>
-        </div>
-        <div className="flex flex-wrap items-stretch gap-4 px-4 py-3">
-          {[
-            {
-              key: 'target' as const,
-              label: 'Target Price',
-              value: targetPrice,
-              formula: "Target Price = Material Standard Price — the company's own established reference (\"should-cost\") price for this material, independent of any vendor's quote.",
-              input: `material_master.standard_price = ${formatINR(targetPrice)}`,
-              unavailable: 'No standard price is recorded for this material.',
-            },
-            {
-              key: 'walkaway' as const,
-              label: 'Walkaway Price',
-              value: walkawayPrice,
-              formula: "Walkaway Price = the Purchase Requisition's Estimated Price — the per-unit price originally budgeted and approved when this requisition was raised; the ceiling before requiring re-approval.",
-              input: `purchase_requisitions.estimated_price = ${formatINR(walkawayPrice)}`,
-              unavailable: 'No estimated price is recorded on this requisition.',
-            },
-            {
-              key: 'deal' as const,
-              label: 'Estimated Deal Value',
-              value: estimatedDealValue,
-              formula: "Estimated Deal Value = Requested Quantity × the selected supplier's Quoted Price.",
-              input:
-                dealQty != null && dealUnitPrice != null
-                  ? `requested_qty = ${dealQty} ${prLine.unit_of_measure}  ×  quoted_price (${selectedQuote?.vendor_name || selectedQuote?.vendor_id || '—'}) = ${formatINR(dealUnitPrice)}`
-                  : '',
-              unavailable: 'Pick a supplier in Select Supplier to value this deal.',
-            },
-          ].map((m) => (
-            <div key={m.key} className="min-w-[180px]">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] uppercase tracking-wide" style={{ color: COLORS.text.tertiary }}>{m.label}</span>
-                <button onClick={() => setOpenFormula(openFormula === m.key ? null : m.key)} aria-label={`How ${m.label} is calculated`}>
-                  <Icon icon="mdi:information-outline" className="w-3.5 h-3.5" style={{ color: TEAL.base }} />
-                </button>
-              </div>
-              <p className="text-xl font-bold" style={{ color: m.value != null ? COLORS.text.primary : COLORS.text.tertiary }}>
-                {m.value != null ? formatINR(m.value) : '—'}
-              </p>
-              {openFormula === m.key && (
-                <div className="mt-2 p-2.5 rounded-lg text-[11px] leading-relaxed" style={{ backgroundColor: TEAL.tint, color: TEAL.dark, maxWidth: 280 }}>
-                  {m.value != null ? (
-                    <>
-                      <p className="font-semibold mb-1">Formula</p>
-                      <p className="mb-1.5">{m.formula}</p>
-                      <p className="font-semibold mb-1">Inputs</p>
-                      <p className="mb-1.5">{m.input}</p>
-                      <p className="font-semibold mb-1">Result</p>
-                      <p>{formatINR(m.value)}</p>
-                    </>
-                  ) : (
-                    <p>{m.unavailable} Showing the limitation instead of guessing a value.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* Hands off the PR, RFQ, and the selected supplier to the award review
           above. Disabled until a selection is confirmed and saved. */}
       <div
@@ -858,7 +781,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <p className="text-[11px] mr-auto" style={{ color: COLORS.text.tertiary }}>
             {header?.rfq_status === 'Awarded'
               ? 'This RFQ is already awarded.'
-              : 'Run the AI Recommendation, then select and confirm one supplier.'}
+              : 'Run the System Recommendation, then select and confirm one supplier.'}
           </p>
         )}
         <button

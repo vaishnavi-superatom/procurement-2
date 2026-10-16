@@ -19,11 +19,11 @@ interface HomeProps {
 // `border` and `shadow` are teal-tinted versions of the app's neutral border/shadow
 // so the KPI cards read as part of the same palette as the banner above them.
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
-  shadow: 'rgba(11, 79, 74, 0.22)',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
+  shadow: 'rgba(46, 71, 164, 0.22)',
 };
 
 type Period = 'Today' | 'This Week' | 'This Month' | 'This Year';
@@ -49,7 +49,10 @@ const KPI_META: KpiMeta[] = [
   { label: 'Vendors', icon: 'mdi:storefront-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
 ];
 
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//local-tool id
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//prod-tool id
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 async function runCount(sql: string, params: Record<string, any>, SA_RUNTIME: any): Promise<number> {

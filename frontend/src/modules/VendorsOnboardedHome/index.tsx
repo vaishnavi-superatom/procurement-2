@@ -38,10 +38,10 @@ const inTimeFilter = (dateStr: string | null, filter: TimeFilter): boolean => {
 
 // Same palette as the rest of this product's procurement screens.
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 // ============================================================
@@ -64,7 +64,10 @@ interface VendorRow {
 // Query helpers — same ToolExecutor path as the other procurement modules.
 // ============================================================
 
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//local-tool id
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//prod-tool id
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 async function runTool<T = any>(sql: string, params: Record<string, any> | undefined, SA_RUNTIME: any): Promise<T[]> {

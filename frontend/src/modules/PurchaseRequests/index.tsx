@@ -35,10 +35,10 @@ interface PurchaseRequestsProps {
 // Teal accent shared with the Home dashboard, so this screen reads as part of the
 // same product rather than a one-off.
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 // ============================================================
@@ -145,7 +145,10 @@ const RFQ_FILTER_DESCRIPTIONS: Record<RfqFilter, string> = {
 // vars are set — they aren't for this project).
 // ============================================================
 
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//local-tool id
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//prod-tool id
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 const PR_LIST_QUERY = `

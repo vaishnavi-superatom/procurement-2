@@ -3,10 +3,10 @@ import { Icon } from '@iconify/react';
 import { COLORS } from '../../design-system/tokens';
 
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 
 export interface ContractRecord {

@@ -20,9 +20,9 @@ const PlaceholderPage: React.FC<PlaceholderPageProps> = ({ icon, title, descript
   >
     <div
       className="w-16 h-16 rounded-xl flex items-center justify-center mb-5"
-      style={{ backgroundColor: '#E6F5F3' }}
+      style={{ backgroundColor: '#EBEEFA' }}
     >
-      <Icon icon={icon} className="w-8 h-8" style={{ color: '#0F6B64' }} />
+      <Icon icon={icon} className="w-8 h-8" style={{ color: '#3A59CD' }} />
     </div>
     <h2 className="text-xl font-semibold mb-2" style={{ color: COLORS.text.primary }}>
       {title}

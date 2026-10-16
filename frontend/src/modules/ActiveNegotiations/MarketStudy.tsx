@@ -5,10 +5,10 @@ import { COLORS, SHADOWS } from '../../design-system/tokens';
 import type { CommodityFeed, ContractBenchmark, HistoricalPrice, MarketInputs, OnlinePrice, Sustainability } from '../../data/rfq-recommendation';
 
 const TEAL = {
-  base: '#0F6B64',
-  dark: '#0B4F4A',
-  tint: '#E6F5F3',
-  border: '#D7E8E6',
+  base: '#3A59CD',
+  dark: '#2E47A4',
+  tint: '#EBEEFA',
+  border: '#D8DEF5',
 };
 // Chart line: a brighter step of the brand teal (passes the chroma and
 // contrast checks the brand colour itself fails as a data colour).
@@ -207,7 +207,7 @@ const OnlineCard: React.FC<{ data: OnlinePrice | null; loading: boolean }> = ({ 
         </p>
       </>
     ) : !data.available ? (
-      // Say why, in the AI's words: e.g. that size is sold on quotation only.
+      // Say why, in the system's words: e.g. that size is sold on quotation only.
       <>
         {data.noPriceReason ? (
           <>
