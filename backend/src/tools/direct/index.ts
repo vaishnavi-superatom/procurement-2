@@ -21,6 +21,7 @@
  */
 
 import type { SourceTool } from '../../sources/core/types';
+import * as procurement from './procurement';
 
 /** Execute function signature matching source instance execute() */
 export type ExecuteFn = (params: { sql: string; params?: Record<string, any> }) => Promise<any>;
@@ -31,9 +32,11 @@ interface ProjectToolsConfig {
 }
 
 // Registry of all ACTIVE project tool configs exposed to the agent.
-// Empty by default = no direct tools are surfaced to the LLM (SQL sources only).
+// A project not listed here is never loaded and never seen by the LLM.
 // To add one: import its module and push it here (see _example/ for the shape).
-const PROJECT_CONFIGS: ProjectToolsConfig[] = [];
+const PROJECT_CONFIGS: ProjectToolsConfig[] = [
+    procurement, // RFQ market study + AI supplier recommendation
+];
 
 /**
  * Create all direct tools by resolving each project's source instance.

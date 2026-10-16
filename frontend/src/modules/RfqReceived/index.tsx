@@ -3,6 +3,15 @@ import { Icon } from '@iconify/react';
 import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, SHADOWS } from '../../design-system/tokens';
 import LoadingState from '../../components/LoadingState';
+import { setTRank, startNegotiation } from '../../data/rfq-workflow';
+import {
+  TechnicalEvaluation,
+  TRankBadge,
+  type TechBid,
+  type TechEvaluation,
+  type TechRequirement,
+  type TRankDefinition,
+} from './TechnicalEvaluation';
 
 interface RfqReceivedProps {
   SA_RUNTIME?: any;
@@ -54,7 +63,7 @@ interface RfqListRow {
   response_deadline: string;
   vendors_invited: number;
   quotes_received: number;
-  rfq_status: 'Awarded' | 'In Negotiation';
+  rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   awarded_vendor_id: string | null;
   awarded_vendor_name: string | null;
   awarded_price: number | null;
@@ -70,7 +79,7 @@ interface RfqHeader {
   response_deadline: string;
   vendors_invited: number;
   quotes_received: number;
-  rfq_status: 'Awarded' | 'In Negotiation';
+  rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   negotiation_rounds: number;
   awarded_vendor_id: string | null;
   awarded_price: number | null;
@@ -208,17 +217,39 @@ const inTimeFilter = (dateStr: string, filter: TimeFilter): boolean => {
 // Small shared bits
 // ============================================================
 
+// An RFQ stays "RFQ Received" until the buyer starts negotiating
+// (same colours as the PR detail's RFQ Status table).
+const RFQ_STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
+  'RFQ Received': { bg: '#E0F2FE', fg: '#0284C7' },
+  'In Negotiation': { bg: '#FFEDD5', fg: '#EA580C' },
+  Awarded: { bg: '#DCFCE7', fg: '#16A34A' },
+};
+
 const RfqStatusBadge: React.FC<{ status: string }> = ({ status }) => {
-  const awarded = status === 'Awarded';
+  const style = RFQ_STATUS_STYLE[status] ?? RFQ_STATUS_STYLE['In Negotiation'];
   return (
     <span
       className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold"
-      style={{
-        backgroundColor: awarded ? '#DCFCE7' : '#FFEDD5',
-        color: awarded ? '#16A34A' : '#EA580C',
-      }}
+      style={{ backgroundColor: style.bg, color: style.fg }}
     >
       {status}
+    </span>
+  );
+};
+
+// Same badge as the PR detail header.
+const UrgencyBadge: React.FC<{ urgency: string }> = ({ urgency }) => {
+  const high = urgency === 'High';
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+      style={{
+        backgroundColor: high ? '#F1F5F9' : COLORS.lightGray,
+        color: high ? '#475569' : COLORS.text.secondary,
+      }}
+    >
+      {high && <Icon icon="mdi:alert-circle" className="w-3 h-3" />}
+      {urgency}
     </span>
   );
 };
@@ -545,6 +576,15 @@ const RfqDetailScreen: React.FC<{
   const [quotations, setQuotations] = useState<QuotationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  // Technical evaluation (T-ranking): one expanded vendor at a time
+  const [requirements, setRequirements] = useState<TechRequirement[]>([]);
+  const [bids, setBids] = useState<TechBid[]>([]);
+  const [evaluations, setEvaluations] = useState<Record<string, TechEvaluation>>({});
+  const [definitions, setDefinitions] = useState<TRankDefinition[]>([]);
+  const [expandedQuoteId, setExpandedQuoteId] = useState<string | null>(null);
+  const [showLegend, setShowLegend] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -555,7 +595,7 @@ const RfqDetailScreen: React.FC<{
       try {
         if (!SAFE_ID.test(rfqId)) throw new Error('Invalid RFQ id');
 
-        const [headerRows, quoteRows] = await Promise.all([
+        const [headerRows, quoteRows, reqRows, bidRows, evalRows, defRows] = await Promise.all([
           runTool<RfqHeader>(
             `
             SELECT
@@ -583,6 +623,34 @@ const RfqDetailScreen: React.FC<{
             { rfqId },
             SA_RUNTIME
           ),
+          // Technical evaluation: what the PR line asked for, each vendor's
+          // offer against it, the (pre-filled) T-ranks, and what they mean.
+          runTool<TechRequirement>(
+            `
+            SELECT t.sort_order, t.parameter, t.required_value, t.comparison, t.is_mandatory
+            FROM pr_technical_requirements t
+            JOIN rfq_events rfq ON rfq.pr_id = t.pr_id AND rfq.material_id = t.material_id
+            WHERE rfq.rfq_id = @rfqId
+            ORDER BY t.sort_order;
+            `,
+            { rfqId },
+            SA_RUNTIME
+          ),
+          runTool<TechBid>(
+            `SELECT quote_id, sort_order, parameter, offered_value, status FROM quotation_technical_bids WHERE rfq_id = @rfqId ORDER BY quote_id, sort_order;`,
+            { rfqId },
+            SA_RUNTIME
+          ),
+          runTool<TechEvaluation & { rfq_id: string }>(
+            `SELECT quote_id, rfq_id, suggested_t_rank, suggestion_reason, t_rank, ranked_by, ranked_at FROM rfq_technical_evaluations WHERE rfq_id = @rfqId;`,
+            { rfqId },
+            SA_RUNTIME
+          ),
+          runTool<TRankDefinition>(
+            `SELECT t_rank, label, description, eligible_for_negotiation FROM t_rank_definitions ORDER BY sort_order;`,
+            undefined,
+            SA_RUNTIME
+          ),
         ]);
         if (cancelled) return;
         // Defensive scoping on top of the WHERE clause — never show a quote or
@@ -592,6 +660,10 @@ const RfqDetailScreen: React.FC<{
         if (ownHeaderRows.length === 0) throw new Error(`No RFQ found for ${rfqId}`);
         setHeader(ownHeaderRows[0]);
         setQuotations(ownQuoteRows);
+        setRequirements(reqRows);
+        setBids(bidRows);
+        setEvaluations(Object.fromEntries(evalRows.filter((e) => e.rfq_id === rfqId).map((e) => [e.quote_id, e])));
+        setDefinitions(defRows);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load this RFQ');
       } finally {
@@ -629,10 +701,14 @@ const RfqDetailScreen: React.FC<{
   // no per-vendor "invited but silent" record, so we can't name who's pending.
   const pendingCount = Math.max(0, header.vendors_invited - header.quotes_received);
 
+  // The buyer's T-rank once set, otherwise the pre-filled suggestion.
+  const tRankOf = (quoteId: string) => evaluations[quoteId]?.t_rank ?? evaluations[quoteId]?.suggested_t_rank ?? null;
+
   // The supplier a negotiation would start with: the awarded quote if one
-  // exists, otherwise the lowest-priced quote (quotations is already sorted
-  // ASC by quoted_price) — never invented, just the leading real record.
-  const leadingQuote = quotations.find((q) => q.is_awarded) || quotations[0] || null;
+  // exists, otherwise the lowest-priced quote still technically accepted
+  // (quotations is already sorted ASC by quoted_price) — never invented, just
+  // the leading real record.
+  const leadingQuote = quotations.find((q) => q.is_awarded) || quotations.find((q) => tRankOf(q.quote_id) !== 'NOT_ACCEPTED') || null;
   const negotiationSupported = Boolean(onStartNegotiation) && Boolean(leadingQuote);
 
   return (
@@ -647,6 +723,7 @@ const RfqDetailScreen: React.FC<{
             {/^rfq/i.test(header.rfq_id) ? header.rfq_id : `RFQ ${header.rfq_id}`}
           </h1>
           <RfqStatusBadge status={header.rfq_status} />
+          {header.urgency && <UrgencyBadge urgency={header.urgency} />}
         </div>
 
         {/* Key info — one small box */}
@@ -683,7 +760,36 @@ const RfqDetailScreen: React.FC<{
       <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
         <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
           <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Quotations</h2>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Quotations</h2>
+                <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
+                  Click a vendor to compare its technical bid with the PR and set its T-rank.
+                </p>
+              </div>
+              {definitions.length > 0 && (
+                <button
+                  onClick={() => setShowLegend((s) => !s)}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium flex-shrink-0"
+                  style={{ color: TEAL.base }}
+                >
+                  <Icon icon="mdi:information-outline" className="w-3.5 h-3.5" />
+                  What do T-ranks mean?
+                </button>
+              )}
+            </div>
+            {showLegend && (
+              <div className="mt-2 grid gap-1.5" style={{ gridTemplateColumns: 'auto 1fr' }}>
+                {definitions.map((d) => (
+                  <React.Fragment key={d.t_rank}>
+                    <TRankBadge rank={d.t_rank} />
+                    <span className="text-[11px] self-center" style={{ color: COLORS.text.secondary }}>
+                      {d.description}{!d.eligible_for_negotiation && ' (does not go to negotiation)'}
+                    </span>
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
           </div>
           {pendingCount > 0 && (
             <div className="flex items-center gap-2 px-4 py-2" style={{ backgroundColor: '#FFF7ED', borderBottom: `1px solid ${TEAL.border}` }}>
@@ -699,7 +805,7 @@ const RfqDetailScreen: React.FC<{
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                  {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'Compliant'].map((h) => (
+                  {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'T-Rank'].map((h) => (
                     <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                       {h}
                     </th>
@@ -707,15 +813,25 @@ const RfqDetailScreen: React.FC<{
                 </tr>
               </thead>
               <tbody>
-                {quotations.map((q) => (
+                {quotations.map((q) => {
+                  const expanded = expandedQuoteId === q.quote_id;
+                  return (
+                  <React.Fragment key={q.quote_id}>
                   <tr
-                    key={q.quote_id}
+                    onClick={() => setExpandedQuoteId(expanded ? null : q.quote_id)}
+                    aria-expanded={expanded}
+                    className="cursor-pointer"
                     style={{
                       borderTop: `1px solid ${COLORS.lightGray}`,
-                      backgroundColor: q.is_awarded ? TEAL.tint : 'transparent',
+                      backgroundColor: q.is_awarded ? TEAL.tint : expanded ? COLORS.lightBackground : 'transparent',
                     }}
                   >
                     <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                      <Icon
+                        icon={expanded ? 'mdi:chevron-down' : 'mdi:chevron-right'}
+                        className="w-4 h-4 inline-block mr-1 -ml-1 align-text-bottom"
+                        style={{ color: COLORS.text.tertiary }}
+                      />
                       <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
                       {q.is_awarded && (
                         <span
@@ -735,18 +851,35 @@ const RfqDetailScreen: React.FC<{
                     <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
                     <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
                     <td className="px-4 py-2">
-                      <span
-                        className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                        style={{
-                          backgroundColor: q.is_technically_compliant ? '#DCFCE7' : '#F1F5F9',
-                          color: q.is_technically_compliant ? '#16A34A' : '#475569',
-                        }}
-                      >
-                        {q.is_technically_compliant ? 'Yes' : 'No'}
-                      </span>
+                      <TRankBadge rank={tRankOf(q.quote_id)} />
                     </td>
                   </tr>
-                ))}
+                  {expanded && (
+                    <tr>
+                      <td colSpan={7} className="p-0" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                        <TechnicalEvaluation
+                          rfqId={header.rfq_id}
+                          vendorId={q.vendor_id}
+                          vendorName={q.vendor_name || q.vendor_id}
+                          requirements={requirements}
+                          bids={bids.filter((b) => b.quote_id === q.quote_id)}
+                          evaluation={evaluations[q.quote_id]}
+                          definitions={definitions}
+                          locked={header.rfq_status === 'Awarded'}
+                          onRankChange={async (tRank) => {
+                            const saved = await setTRank(header.rfq_id, q.quote_id, tRank);
+                            setEvaluations((prev) => ({
+                              ...prev,
+                              [q.quote_id]: { ...prev[q.quote_id], t_rank: saved.tRank, ranked_by: saved.rankedBy, ranked_at: saved.rankedAt },
+                            }));
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -754,15 +887,35 @@ const RfqDetailScreen: React.FC<{
 
         {/* Hands off the linked PR, this RFQ, and the leading supplier to
             Active Negotiations. Disabled when there's no quotation to
-            negotiate from (see onStartNegotiation / negotiationSupported above). */}
+            negotiate from (see onStartNegotiation / negotiationSupported above).
+            This is the buyer actively entering negotiation, so an RFQ still
+            "RFQ Received" moves to "In Negotiation" first. */}
         <div
           className="rounded-xl flex items-center justify-end gap-3 px-4 py-3"
           style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
         >
+          {startError && (
+            <span className="text-xs mr-auto" style={{ color: '#475569' }}>
+              Couldn't start the negotiation: {startError}
+            </span>
+          )}
           <button
-            disabled={!negotiationSupported}
-            onClick={() => {
-              if (!negotiationSupported || !leadingQuote) return;
+            disabled={!negotiationSupported || starting}
+            onClick={async () => {
+              if (!negotiationSupported || !leadingQuote || starting) return;
+              setStartError(null);
+              if (header.rfq_status === 'RFQ Received') {
+                setStarting(true);
+                try {
+                  const change = await startNegotiation(header.rfq_id);
+                  setHeader({ ...header, rfq_status: change.status as RfqHeader['rfq_status'] });
+                } catch (err) {
+                  setStartError(err instanceof Error ? err.message : 'please try again');
+                  return;
+                } finally {
+                  setStarting(false);
+                }
+              }
               onStartNegotiation?.({
                 prId: header.pr_id,
                 rfqId: header.rfq_id,
@@ -775,11 +928,11 @@ const RfqDetailScreen: React.FC<{
             style={{
               backgroundColor: negotiationSupported ? TEAL.base : COLORS.lightGray,
               color: negotiationSupported ? COLORS.white : COLORS.text.tertiary,
-              cursor: negotiationSupported ? 'pointer' : 'not-allowed',
+              cursor: negotiationSupported && !starting ? 'pointer' : 'not-allowed',
             }}
           >
-            <Icon icon="mdi:handshake-outline" className="w-4 h-4" />
-            Start Negotiation
+            <Icon icon={starting ? 'mdi:loading' : 'mdi:handshake-outline'} className={`w-4 h-4 ${starting ? 'animate-spin' : ''}`} />
+            {starting ? 'Starting…' : 'Start Negotiation'}
           </button>
         </div>
       </div>

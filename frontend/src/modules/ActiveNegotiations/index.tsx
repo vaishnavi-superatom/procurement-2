@@ -1,8 +1,20 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, SHADOWS } from '../../design-system/tokens';
 import LoadingState from '../../components/LoadingState';
+import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
+import { MarketStudyPanel } from './MarketStudy';
+import { RecommendationCard, SelectSupplierList } from './SupplierSelection';
+import {
+  getMarketStudy,
+  getOnlinePrice,
+  recommendSupplier,
+  type MarketInputs,
+  type OnlinePrice,
+  type SupplierRecommendation,
+} from '../../data/rfq-recommendation';
+import type { SupplierSelection } from '../../data/rfq-workflow';
 
 interface ActiveNegotiationsProps {
   SA_RUNTIME?: any;
@@ -14,8 +26,9 @@ interface ActiveNegotiationsProps {
   materialId?: string | null;
   vendorId?: string | null;
   onBack?: () => void;
-  /** Fired by "Proceed to Approval", with the recommended supplier's id
-   * preserved — opens the approval view for this exact PR/RFQ/supplier. */
+  /** Fired by "Send for Approval" with the supplier the buyer selected (and
+   * saved via Select Supplier) — opens the approval view for this exact
+   * PR/RFQ/supplier. */
   onProceedToApproval?: (args: { prId: string; rfqId: string; materialId: string; vendorId: string }) => void;
 }
 
@@ -58,7 +71,7 @@ interface RfqHeader {
   response_deadline: string;
   vendors_invited: number;
   quotes_received: number;
-  rfq_status: 'Awarded' | 'In Negotiation';
+  rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   negotiation_rounds: number;
   awarded_vendor_id: string | null;
   awarded_price: number | null;
@@ -79,6 +92,10 @@ interface QuoteRow {
   warranty_months: number;
   is_technically_compliant: boolean;
   is_awarded: boolean;
+  /** From technical evaluation (rfq_vendor_ranking): T1–T4 or NOT_ACCEPTED,
+   * and the price rank among the technically accepted vendors. */
+  t_rank: string | null;
+  l_rank: string | null;
   otd_pct: number | null;
   otd_trend: string | null;
   quality_acceptance_pct: number | null;
@@ -134,7 +151,7 @@ const METADATA: ComponentMetadata = {
   displayName: 'Show negotiation detail for a PR/RFQ',
   isDisplayComp: true,
   type: 'ActiveNegotiations',
-  description: 'Negotiation workspace for a specific PR/RFQ: supplier comparison, evidence-based recommendation, and pricing reference points',
+  description: 'Negotiation workspace for a specific PR/RFQ: supplier comparison by technical (T) and price (L) rank, single-supplier award, and pricing reference points',
   category: 'Dashboard',
   keywords: ['negotiation', 'rfq', 'supplier', 'recommendation', 'pricing', 'procurement'],
   props: {},
@@ -165,31 +182,111 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [prLine, setPrLine] = useState<PRLine | null>(null);
   const [header, setHeader] = useState<RfqHeader | null>(null);
   const [quotes, setQuotes] = useState<QuoteRow[]>([]);
+  // Vendors ranked "Not accepted" in technical evaluation don't negotiate.
+  const [notAcceptedCount, setNotAcceptedCount] = useState(0);
   const [commodityPrices, setCommodityPrices] = useState<CommodityPriceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedVendorId, setExpandedVendorId] = useState<string | null>(vendorId ?? null);
   const [openFormula, setOpenFormula] = useState<'target' | 'walkaway' | 'deal' | null>(null);
   // "Proceed to Approval" opens this review in place (same loaded data, no
   // re-fetch) instead of jumping straight to the approval screen — lets the
-  // buyer see the award breakdown, including any split across the suppliers
-  // they've checked below, before anything is sent forward.
+  // buyer see the award before anything is sent forward.
   const [showAwardReview, setShowAwardReview] = useState(false);
-  // Which suppliers the buyer has checked to negotiate with / award to — the
-  // buyer can select any supplier in the table, not only the recommended
-  // one(s). Seeded from the computed recommendation once quotes load, below.
-  const [selectedVendorIds, setSelectedVendorIds] = useState<Set<string>>(new Set());
-  // Buyer-entered award split, percent per vendor_id — only meaningful (and
-  // only shown as editable) when more than one supplier is selected. Never
-  // read from the database: there's no stored split allocation to reuse, so
-  // this is explicitly the buyer's own input, reset to an equal split
-  // whenever the selection changes.
-  const [allocations, setAllocations] = useState<Record<string, number>>({});
+  // The one supplier the buyer picks to award to (product review, Oct 16:
+  // "ask them to pick one"). Nothing is pre-selected — there's no
+  // recommendation until the buyer asks for the AI Recommendation.
+  const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
+  // The pick once confirmed and saved (rfq_supplier_selections); only a saved
+  // pick can go to approval.
+  const [selection, setSelection] = useState<SupplierSelection | null>(null);
+
+  // AI Recommendation: market study, online price, then the pick.
+  const [studyOpen, setStudyOpen] = useState(false);
+  const [market, setMarket] = useState<MarketInputs | null>(null);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [online, setOnline] = useState<OnlinePrice | null>(null);
+  const [onlineLoading, setOnlineLoading] = useState(false);
+  const [rec, setRec] = useState<SupplierRecommendation | null>(null);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
+  // Bumped per run (and per RFQ) so a slow answer from an earlier run is ignored.
+  const runIdRef = useRef(0);
 
   useEffect(() => {
-    setExpandedVendorId(vendorId ?? null);
+    runIdRef.current += 1;
     setShowAwardReview(false);
+    setSelectedVendorId(null);
+    setSelection(null);
+    setStudyOpen(false);
+    setMarket(null);
+    setMarketError(null);
+    setOnline(null);
+    setOnlineLoading(false);
+    setRec(null);
+    setRecLoading(false);
+    setRecError(null);
   }, [vendorId, rfqId]);
+
+  /**
+   * The market study (fast) and the web price search (~15–30 s) run side by
+   * side; the recommendation follows once the online price is in, so it
+   * reuses that cached price. `refresh` re-runs everything from scratch.
+   */
+  const runRecommendation = async (refresh = false) => {
+    if (!rfqId) return;
+    const runId = ++runIdRef.current;
+    const current = () => runId === runIdRef.current;
+    setStudyOpen(true);
+    setRec(null);
+    setRecError(null);
+    setRecLoading(true);
+    setOnlineLoading(true);
+
+    if (refresh) {
+      setMarket(null);
+      setOnline(null);
+      try {
+        const result = await recommendSupplier(rfqId, SA_RUNTIME, true);
+        if (!current()) return;
+        setRec(result);
+        setMarket(result.market);
+        setOnline(result.market?.online ?? null);
+        setMarketError(null);
+      } catch (err) {
+        if (current()) setRecError(err instanceof Error ? err.message : 'Recommendation failed');
+      } finally {
+        if (current()) {
+          setRecLoading(false);
+          setOnlineLoading(false);
+        }
+      }
+      return;
+    }
+
+    setMarketError(null);
+    getMarketStudy(rfqId, SA_RUNTIME)
+      .then((study) => current() && setMarket(study.market))
+      .catch((err) => current() && setMarketError(err instanceof Error ? err.message : 'Market study failed'));
+
+    try {
+      const price = await getOnlinePrice(rfqId, SA_RUNTIME);
+      if (current()) setOnline(price);
+    } catch (err) {
+      if (current()) setOnline({ available: false, summary: `Online price search failed${err instanceof Error ? `: ${err.message}` : ''}.` });
+    } finally {
+      if (current()) setOnlineLoading(false);
+    }
+    if (!current()) return;
+
+    try {
+      const result = await recommendSupplier(rfqId, SA_RUNTIME);
+      if (current()) setRec(result);
+    } catch (err) {
+      if (current()) setRecError(err instanceof Error ? err.message : 'Recommendation failed');
+    } finally {
+      if (current()) setRecLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!prId || !rfqId || !materialId) return;
@@ -232,11 +329,12 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             `
             SELECT q.quote_id, q.rfq_id, q.vendor_id, v.vendor_name, v.vendor_type, v.city, v.state,
                    q.quoted_price, q.quoted_qty, q.delivery_days, q.payment_terms, q.warranty_months,
-                   q.is_technically_compliant, q.is_awarded,
+                   q.is_technically_compliant, q.is_awarded, rk.t_rank, rk.l_rank,
                    sc.otd_pct, sc.otd_trend, sc.quality_acceptance_pct, sc.financial_risk_tier, sc.overall_risk, sc.sanctions_flag, sc.ecovadis_score
             FROM quotations q
             LEFT JOIN vendor_master v ON v.vendor_id = q.vendor_id
             LEFT JOIN supplier_scorecard sc ON sc.vendor_id = q.vendor_id
+            LEFT JOIN rfq_vendor_ranking rk ON rk.quote_id = q.quote_id
             WHERE q.rfq_id = @rfqId
             ORDER BY q.quoted_price ASC;
             `,
@@ -248,7 +346,9 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         if (prRows.length === 0) throw new Error(`No purchase requisition line found for ${prId} / ${materialId}`);
         setPrLine(prRows[0]);
         setHeader(headerRows[0] ?? null);
-        setQuotes(quoteRows.filter((q) => q.rfq_id === rfqId));
+        const ownQuotes = quoteRows.filter((q) => q.rfq_id === rfqId);
+        setQuotes(ownQuotes.filter((q) => q.t_rank !== 'NOT_ACCEPTED'));
+        setNotAcceptedCount(ownQuotes.filter((q) => q.t_rank === 'NOT_ACCEPTED').length);
 
         const commodityCode = prRows[0].primary_commodity;
         if (commodityCode && SAFE_ID.test(commodityCode)) {
@@ -278,72 +378,11 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     };
   }, [prId, rfqId, materialId, SA_RUNTIME]);
 
-  // Recommendation: ground truth if the RFQ already has an awarded quote;
-  // otherwise computed from real evidence — technically compliant, then not
-  // high financial risk / not sanctioned, then lowest price. A second (or
-  // third) quote within 5% of the best compliant price is treated as a
-  // split-award candidate rather than invented into a specific allocation.
-  const { recommendedIds, basis, rankedPool } = useMemo(() => {
-    const compliant = quotes.filter((q) => q.is_technically_compliant);
-    const safe = compliant.filter((q) => q.financial_risk_tier !== 'High' && !q.sanctions_flag);
-    const pool = safe.length > 0 ? safe : compliant.length > 0 ? compliant : quotes;
-    const ranked = [...pool].sort((a, b) => a.quoted_price - b.quoted_price);
-
-    const awarded = quotes.filter((q) => q.is_awarded);
-    if (awarded.length > 0) {
-      return { recommendedIds: new Set(awarded.map((q) => q.quote_id)), basis: 'awarded' as const, rankedPool: ranked };
-    }
-    if (ranked.length === 0) {
-      return { recommendedIds: new Set<string>(), basis: 'none' as const, rankedPool: ranked };
-    }
-    const best = ranked[0];
-    const splitCandidates = ranked.filter((q) => q.quoted_price <= best.quoted_price * 1.05);
-    const chosen = splitCandidates.length > 1 ? splitCandidates : [best];
-    return { recommendedIds: new Set(chosen.map((q) => q.quote_id)), basis: 'computed' as const, rankedPool: ranked };
-  }, [quotes]);
-
-  const isSplitAward = basis === 'computed' && recommendedIds.size > 1;
-  const recommendedQuotes = quotes.filter((q) => recommendedIds.has(q.quote_id));
-  const leadQuote = recommendedQuotes[0] || rankedPool[0] || null;
-
-  // Seed the buyer's selection with the computed recommendation once this
-  // negotiation's quotes load — a starting point, not a lock-in; the buyer
-  // can check or uncheck any supplier in the table below.
-  useEffect(() => {
-    if (quotes.length === 0) return;
-    setSelectedVendorIds(new Set(quotes.filter((q) => recommendedIds.has(q.quote_id)).map((q) => q.vendor_id)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quotes]);
-
-  const toggleVendorSelection = (vendorIdToToggle: string) => {
-    setSelectedVendorIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(vendorIdToToggle)) next.delete(vendorIdToToggle);
-      else next.add(vendorIdToToggle);
-      return next;
-    });
-  };
-
-  const selectedQuotes = quotes.filter((q) => selectedVendorIds.has(q.vendor_id));
-
-  // Reset to an equal split whenever which suppliers are selected changes —
-  // a neutral, real starting point (not invented numbers tied to any quote)
-  // that the buyer can then adjust by hand below.
-  const selectionKey = Array.from(selectedVendorIds).sort().join(',');
-  useEffect(() => {
-    const ids = Array.from(selectedVendorIds);
-    if (ids.length === 0) return;
-    const even = Math.floor(100 / ids.length);
-    const next: Record<string, number> = {};
-    ids.forEach((id, i) => {
-      next[id] = i === ids.length - 1 ? 100 - even * (ids.length - 1) : even;
-    });
-    setAllocations(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectionKey]);
-
-  const allocationTotal = selectedQuotes.reduce((sum, q) => sum + (allocations[q.vendor_id] ?? 0), 0);
-  const allocationValid = selectedQuotes.length <= 1 || Math.round(allocationTotal) === 100;
+  // No built-in recommendation here: the product review (Oct 16) rejected
+  // comparing on lowest price / compliance / delivery and wants nothing
+  // recommended until the buyer asks for the AI Recommendation.
+  const selectedQuote = quotes.find((q) => q.vendor_id === selectedVendorId) ?? null;
+  const readyForApproval = !!selectedQuote && selection?.vendorId === selectedQuote.vendor_id && header?.rfq_status !== 'Awarded';
 
   const commodityTrend = useMemo(() => {
     if (commodityPrices.length < 2) return null;
@@ -354,15 +393,12 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     return { latest, earliest, pctChange };
   }, [commodityPrices]);
 
-  const reasonsFor = (q: QuoteRow): string[] => {
+  // Facts about the chosen supplier, shown with the award — plain record, no
+  // recommendation logic.
+  const factsFor = (q: QuoteRow): string[] => {
     const reasons: string[] = [];
-    const rank = rankedPool.findIndex((r) => r.quote_id === q.quote_id);
-    reasons.push(
-      rank === 0
-        ? `Lowest price among compliant, acceptable-risk quotes (${formatINR(q.quoted_price)}).`
-        : `Within 5% of the lowest compliant quote (${formatINR(q.quoted_price)}) — considered for a split award.`
-    );
-    reasons.push(q.is_technically_compliant ? 'Technically compliant with the RFQ requirements.' : 'Not marked technically compliant.');
+    reasons.push(`Quoted ${formatINR(q.quoted_price)} per ${prLine?.unit_of_measure ?? 'unit'}.`);
+    reasons.push(`Technical rank ${q.t_rank ?? 'not set'}${q.l_rank ? `, price rank ${q.l_rank}` : ''} (T and L are ranked independently).`);
     reasons.push(`Delivery in ${q.delivery_days} days, payment terms ${q.payment_terms}, warranty ${q.warranty_months} months.`);
     if (q.otd_pct != null) reasons.push(`On-time delivery track record: ${q.otd_pct}%${q.otd_trend ? ` (${q.otd_trend.toLowerCase()})` : ''}.`);
     if (q.financial_risk_tier) reasons.push(`Financial risk tier: ${q.financial_risk_tier}.`);
@@ -383,7 +419,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const targetPrice = prLine?.standard_price ?? null;
   const walkawayPrice = prLine?.estimated_price ?? null;
   const dealQty = prLine?.requested_qty ?? null;
-  const dealUnitPrice = leadQuote?.quoted_price ?? null;
+  const dealUnitPrice = selectedQuote?.quoted_price ?? null;
   const estimatedDealValue = dealQty != null && dealUnitPrice != null ? dealQty * dealUnitPrice : null;
 
   if (!prId || !rfqId || !materialId || !vendorId) {
@@ -421,14 +457,9 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     );
   }
 
-  if (showAwardReview) {
+  if (showAwardReview && selectedQuote && readyForApproval) {
     const awardQty = prLine.requested_qty;
-    const rowAward = (q: QuoteRow) => {
-      const pct = allocations[q.vendor_id] ?? 0;
-      const qty = selectedQuotes.length > 1 ? Math.round((awardQty * pct) / 100) : awardQty;
-      return { pct: selectedQuotes.length > 1 ? pct : 100, qty, value: qty * q.quoted_price };
-    };
-    const totalAwardValue = selectedQuotes.reduce((sum, q) => sum + rowAward(q).value, 0);
+    const awardValue = awardQty * selectedQuote.quoted_price;
 
     return (
       <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
@@ -463,38 +494,17 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           ))}
         </div>
 
-        {/* Award summary — one row per checked supplier. With more than one,
-            the percentage column is a buyer-entered split (defaulted to an
-            equal share, never read from the database), and each row sends
-            forward independently since the recorded data only ever has one
-            awarded supplier per RFQ. */}
+        {/* Award summary — the one supplier the buyer picked, for the full
+            requested quantity. */}
         <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-          <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>
-              {selectedQuotes.length > 1 ? `Split Award — ${selectedQuotes.length} Suppliers` : 'Award Summary'}
-            </h2>
-            {selectedQuotes.length > 1 && (
-              <span className="text-xs font-semibold" style={{ color: allocationValid ? TEAL.base : '#C2410C' }}>
-                Allocation Total: {Math.round(allocationTotal)}%{!allocationValid && ' — must total 100%'}
-              </span>
-            )}
+          <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Award Summary</h2>
           </div>
-
-          {selectedQuotes.length > 1 && (
-            <div className="px-4 py-2.5 flex items-start gap-2" style={{ backgroundColor: '#FFF7ED', borderBottom: '1px solid #FED7AA' }}>
-              <Icon icon="mdi:call-split" className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: '#C2410C' }} />
-              <p className="text-xs" style={{ color: '#9A3412' }}>
-                The recorded quotes don't define a quantity split across suppliers — the percentages below are entered by you,
-                starting from an equal share. Adjust them to reflect the intended split; quantity and value are computed from
-                the requisition's requested quantity and each supplier's own quoted price.
-              </p>
-            </div>
-          )}
 
           <table className="w-full text-sm">
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Vendor', 'Compliant', 'Risk', 'Quoted Price', 'Allocation %', 'Award Qty', 'Award Value', ''].map((h) => (
+                {['Vendor', 'T · L', 'Risk', 'Quoted Price', 'Award Qty', 'Award Value', ''].map((h) => (
                   <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                     {h}
                   </th>
@@ -502,93 +512,96 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
               </tr>
             </thead>
             <tbody>
-              {selectedQuotes.map((q) => {
-                const { pct, qty, value } = rowAward(q);
-                return (
-                  <tr key={q.quote_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
-                      <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
-                      <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
-                        {[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2">
-                      <span
-                        className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                        style={{
-                          backgroundColor: q.is_technically_compliant ? '#DCFCE7' : '#F1F5F9',
-                          color: q.is_technically_compliant ? '#16A34A' : '#475569',
-                        }}
-                      >
-                        {q.is_technically_compliant ? 'Yes' : 'No'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2"><RiskBadge tier={q.overall_risk} /></td>
-                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
-                    <td className="px-4 py-2">
-                      {selectedQuotes.length > 1 ? (
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          value={pct}
-                          onChange={(e) => {
-                            const v = Math.max(0, Math.min(100, Number(e.target.value) || 0));
-                            setAllocations((prev) => ({ ...prev, [q.vendor_id]: v }));
-                          }}
-                          className="w-16 px-2 py-1 rounded-md text-xs"
-                          style={{ border: `1px solid ${COLORS.borderGray}`, color: COLORS.text.primary }}
-                        />
-                      ) : (
-                        <span style={{ color: COLORS.text.secondary }}>100%</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{qty} {prLine.unit_of_measure}</td>
-                    <td className="px-4 py-2 font-semibold" style={{ color: COLORS.text.primary }}>{formatINR(value)}</td>
-                    <td className="px-4 py-2 text-right">
-                      <button
-                        disabled={!allocationValid || qty <= 0}
-                        onClick={() => onProceedToApproval?.({ prId: prLine.pr_id, rfqId: rfqId!, materialId: prLine.material_id, vendorId: q.vendor_id })}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap"
-                        style={{
-                          backgroundColor: allocationValid && qty > 0 ? TEAL.base : COLORS.lightGray,
-                          color: allocationValid && qty > 0 ? COLORS.white : COLORS.text.tertiary,
-                          cursor: allocationValid && qty > 0 ? 'pointer' : 'not-allowed',
-                        }}
-                      >
-                        <Icon icon="mdi:send-outline" className="w-3.5 h-3.5" />
-                        Send for Approval
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              <tr style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                  <span className="font-medium">{selectedQuote.vendor_name || selectedQuote.vendor_id}</span>
+                  <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+                    {[selectedQuote.vendor_type, [selectedQuote.city, selectedQuote.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
+                  </div>
+                </td>
+                <td className="px-4 py-2 whitespace-nowrap">
+                  <TRankBadge rank={selectedQuote.t_rank} />
+                  {selectedQuote.l_rank && <span className="ml-1.5 text-[11px] font-semibold" style={{ color: COLORS.text.secondary }}>{selectedQuote.l_rank}</span>}
+                </td>
+                <td className="px-4 py-2"><RiskBadge tier={selectedQuote.overall_risk} /></td>
+                <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(selectedQuote.quoted_price)}</td>
+                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{awardQty} {prLine.unit_of_measure}</td>
+                <td className="px-4 py-2 font-semibold" style={{ color: COLORS.text.primary }}>{formatINR(awardValue)}</td>
+                <td className="px-4 py-2 text-right">
+                  <button
+                    disabled={awardQty <= 0}
+                    onClick={() => onProceedToApproval?.({ prId: prLine.pr_id, rfqId: rfqId!, materialId: prLine.material_id, vendorId: selectedQuote.vendor_id })}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap"
+                    style={{
+                      backgroundColor: awardQty > 0 ? TEAL.base : COLORS.lightGray,
+                      color: awardQty > 0 ? COLORS.white : COLORS.text.tertiary,
+                      cursor: awardQty > 0 ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    <Icon icon="mdi:send-outline" className="w-3.5 h-3.5" />
+                    Send for Approval
+                  </button>
+                </td>
+              </tr>
             </tbody>
           </table>
 
           <div className="px-4 py-3 flex items-center justify-between" style={{ backgroundColor: COLORS.lightBackground }}>
             <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>Total Award Value</span>
-            <p className="text-lg font-bold" style={{ color: TEAL.base }}>{formatINR(totalAwardValue)}</p>
+            <p className="text-lg font-bold" style={{ color: TEAL.base }}>{formatINR(awardValue)}</p>
           </div>
         </div>
 
-        {/* Supporting evidence — shown for a single selected supplier; with a
-            split award, Compliant/Risk are already in the table above instead,
-            to keep this concise. */}
-        {selectedQuotes.length === 1 && (
+        {/* Why this supplier: the recommendation's reason, or the buyer's
+            reason for choosing someone else (saved with the selection). */}
+        {selection && selection.vendorId === selectedQuote.vendor_id && (
           <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-            <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-              <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supporting Evidence</h2>
+            <div className="px-4 py-3 flex items-center justify-between gap-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+              <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Selection</h2>
+              <span
+                className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                style={selection.isDeviation ? { backgroundColor: '#FFEDD5', color: '#EA580C' } : { backgroundColor: TEAL.tint, color: TEAL.dark }}
+              >
+                {selection.isDeviation ? 'Differs from recommendation' : 'Recommended supplier'}
+              </span>
             </div>
-            <div className="px-4 py-3">
-              <ul className="text-xs space-y-1 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
-                {reasonsFor(selectedQuotes[0]).map((r, i) => (
-                  <li key={i}>{r}</li>
-                ))}
-              </ul>
+            <div className="px-4 py-3 space-y-1.5 text-xs" style={{ color: COLORS.text.secondary }}>
+              {selection.isDeviation ? (
+                <>
+                  <p>
+                    Recommended:{' '}
+                    <span className="font-medium" style={{ color: COLORS.text.primary }}>
+                      {rec?.recommendedVendor || selection.recommendedVendorId}
+                    </span>
+                    {rec?.combinedRank && ` (${rec.combinedRank})`}
+                  </p>
+                  <p>
+                    Buyer's reason: <span style={{ color: COLORS.text.primary }}>"{selection.comment}"</span>
+                  </p>
+                </>
+              ) : (
+                rec?.rationale && <p style={{ color: COLORS.text.primary }}>{rec.rationale}</p>
+              )}
+              <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+                Selected{selection.selectedBy ? ` by ${selection.selectedBy}` : ''} on {formatDate(selection.createdAt)}
+              </p>
             </div>
           </div>
         )}
+
+        {/* Supporting evidence — the chosen supplier's own record */}
+        <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
+          <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supporting Evidence</h2>
+          </div>
+          <div className="px-4 py-3">
+            <ul className="text-xs space-y-1 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
+              {factsFor(selectedQuote).map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
       </div>
     );
   }
@@ -626,39 +639,18 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         ))}
       </div>
 
-      {/* 2 & 3. Supplier comparison + recommendation */}
+      {/* 2. Supplier comparison — T · L ranks in price order, for reading only;
+          the pick happens in Select Supplier, after the recommendation. */}
       <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-        <div className="px-4 py-3 flex items-start justify-between gap-4" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-          <div>
-            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
-            {basis === 'awarded' && (
-              <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>Recommendation reflects this RFQ's actual award.</p>
-            )}
-            <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-              Check one or more suppliers below to negotiate with or award to.
+        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+          <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
+          <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
+            Technically accepted vendors by quoted price (L-rank). T and L are ranked independently.
+          </p>
+          {notAcceptedCount > 0 && (
+            <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
+              {notAcceptedCount} vendor{notAcceptedCount === 1 ? '' : 's'} ranked Not accepted in technical evaluation {notAcceptedCount === 1 ? 'is' : 'are'} left out.
             </p>
-          </div>
-          {/* Selected suppliers stay visible here while reviewing quotes below. */}
-          {selectedQuotes.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap justify-end max-w-[55%]">
-              {selectedQuotes.map((q) => (
-                <span
-                  key={q.vendor_id}
-                  className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] font-medium"
-                  style={{ backgroundColor: TEAL.tint, color: TEAL.dark }}
-                >
-                  {q.vendor_name || q.vendor_id}
-                  <button
-                    onClick={() => toggleVendorSelection(q.vendor_id)}
-                    aria-label={`Remove ${q.vendor_name || q.vendor_id} from selection`}
-                    className="flex items-center justify-center rounded-full"
-                    style={{ width: 14, height: 14 }}
-                  >
-                    <Icon icon="mdi:close" className="w-3 h-3" style={{ color: TEAL.dark }} />
-                  </button>
-                </span>
-              ))}
-            </div>
           )}
         </div>
         {quotes.length === 0 ? (
@@ -667,7 +659,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <table className="w-full text-sm">
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Select', 'Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'Compliant'].map((h) => (
+                {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'T · L'].map((h) => (
                   <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                     {h}
                   </th>
@@ -676,114 +668,102 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             </thead>
             <tbody>
               {quotes.map((q) => {
-                const recommended = recommendedIds.has(q.quote_id);
-                const expanded = expandedVendorId === q.vendor_id;
-                const checked = selectedVendorIds.has(q.vendor_id);
+                const picked = selection?.vendorId === q.vendor_id;
                 return (
-                  <React.Fragment key={q.quote_id}>
-                    <tr
-                      onClick={() => recommended && setExpandedVendorId(expanded ? null : q.vendor_id)}
-                      style={{
-                        borderTop: `1px solid ${COLORS.lightGray}`,
-                        backgroundColor: checked ? TEAL.tint : 'transparent',
-                        cursor: recommended ? 'pointer' : 'default',
-                      }}
-                    >
-                      <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleVendorSelection(q.vendor_id)}
-                          className="w-4 h-4 cursor-pointer"
-                          style={{ accentColor: TEAL.base }}
-                          aria-label={`Select ${q.vendor_name || q.vendor_id}`}
-                        />
-                      </td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
-                        <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
-                        {recommended && (
-                          <span
-                            className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
-                            style={{ backgroundColor: TEAL.base, color: COLORS.white }}
-                          >
-                            <Icon icon="mdi:star" className="w-2.5 h-2.5" /> Recommended
-                            <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} className="w-2.5 h-2.5" />
-                          </span>
-                        )}
-                        <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
-                          {[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
-                        </div>
-                      </td>
-                      <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.delivery_days} days</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
-                      <td className="px-4 py-2">
+                  <tr
+                    key={q.quote_id}
+                    style={{
+                      borderTop: `1px solid ${COLORS.lightGray}`,
+                      backgroundColor: picked ? TEAL.tint : 'transparent',
+                    }}
+                  >
+                    <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                      <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
+                      {q.is_awarded && (
                         <span
-                          className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                          style={{
-                            backgroundColor: q.is_technically_compliant ? '#DCFCE7' : '#F1F5F9',
-                            color: q.is_technically_compliant ? '#16A34A' : '#475569',
-                          }}
+                          className="ml-2 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
+                          style={{ backgroundColor: TEAL.base, color: COLORS.white }}
                         >
-                          {q.is_technically_compliant ? 'Yes' : 'No'}
+                          Awarded
                         </span>
-                      </td>
-                    </tr>
-                    {recommended && expanded && (
-                      <tr style={{ backgroundColor: TEAL.tint }}>
-                        <td colSpan={8} className="px-4 py-3">
-                          <div className="flex items-start gap-2">
-                            <Icon icon="mdi:lightbulb-on-outline" className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: TEAL.base }} />
-                            <div>
-                              <p className="text-xs font-semibold mb-1" style={{ color: TEAL.base }}>
-                                Why {q.vendor_name || q.vendor_id} is recommended
-                              </p>
-                              <ul className="text-xs space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
-                                {reasonsFor(q).map((r, i) => (
-                                  <li key={i}>{r}</li>
-                                ))}
-                              </ul>
-                              <div className="flex items-center gap-2 mt-1.5">
-                                <Icon icon="mdi:chart-donut" className="w-3.5 h-3.5" style={{ color: COLORS.text.tertiary }} />
-                                <span className="text-[11px]" style={{ color: COLORS.text.tertiary }}>Overall risk:</span>
-                                <RiskBadge tier={q.overall_risk} />
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
+                      )}
+                      <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+                        {[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
+                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
+                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.delivery_days} days</td>
+                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
+                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
+                    <td className="px-4 py-2 whitespace-nowrap">
+                      <TRankBadge rank={q.t_rank} />
+                      {q.l_rank && <span className="ml-1.5 text-[11px] font-semibold" style={{ color: COLORS.text.secondary }}>{q.l_rank}</span>}
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         )}
+        {/* No recommendation until the buyer asks for one (product review, Oct 16). */}
+        {quotes.length > 0 && (
+          <div className="px-4 py-3 flex items-center justify-between gap-3" style={{ borderTop: `1px solid ${TEAL.border}`, backgroundColor: COLORS.lightBackground }}>
+            <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
+              {studyOpen
+                ? 'Market study and recommendation below.'
+                : 'Runs a market study (our past prices, commodity trend, online price) and recommends one supplier.'}
+            </p>
+            {!studyOpen && (
+              <button
+                onClick={() => runRecommendation()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold flex-shrink-0"
+                style={{ backgroundColor: TEAL.base, color: COLORS.white }}
+              >
+                <Icon icon="mdi:creation-outline" className="w-4 h-4" />
+                AI Recommendation
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* 4. Split award note */}
-      {isSplitAward && (
-        <div
-          className="rounded-lg px-4 py-3 mb-4 flex items-start gap-2"
-          style={{ backgroundColor: '#FFF7ED', border: '1px solid #FED7AA' }}
-        >
-          <Icon icon="mdi:call-split" className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: '#C2410C' }} />
-          <p className="text-xs" style={{ color: '#9A3412' }}>
-            {recommendedQuotes.length} suppliers are within 5% of each other on price and both compliant with acceptable risk —{' '}
-            {recommendedQuotes.map((q) => q.vendor_name || q.vendor_id).join(' and ')} could be considered for a split award to
-            diversify supply risk. This data doesn't support a specific quantity split, so none is proposed — that allocation would
-            need a buyer decision.
-          </p>
-        </div>
-      )}
-      {basis === 'none' && (
-        <div className="rounded-lg px-4 py-3 mb-4" style={{ backgroundColor: COLORS.lightGray }}>
-          <p className="text-xs" style={{ color: COLORS.text.secondary }}>
-            No technically compliant quotation is available yet, so no supplier can be recommended from the current data.
-          </p>
-        </div>
+      {studyOpen && (
+        <>
+          <MarketStudyPanel
+            market={market}
+            online={online}
+            onlineLoading={onlineLoading}
+            error={marketError}
+            vendorIds={quotes.map((q) => q.vendor_id)}
+            lowestQuote={quotes[0]?.quoted_price ?? null}
+          />
+          <RecommendationCard rec={rec} loading={recLoading} error={recError} onRerun={() => runRecommendation(true)} />
+          {rec && rec.data.length > 0 && (
+            header?.rfq_status === 'Awarded' ? (
+              <div className="rounded-lg px-4 py-3 mb-4 flex items-center gap-2" style={{ backgroundColor: TEAL.tint, border: `1px solid ${TEAL.border}` }}>
+                <Icon icon="mdi:check-decagram" className="w-4 h-4 flex-shrink-0" style={{ color: TEAL.base }} />
+                <p className="text-xs" style={{ color: TEAL.dark }}>
+                  This RFQ is already awarded
+                  {header.awarded_vendor_id ? ` to ${quotes.find((q) => q.vendor_id === header.awarded_vendor_id)?.vendor_name || header.awarded_vendor_id}` : ''}, so
+                  there's no supplier to select.
+                </p>
+              </div>
+            ) : (
+              <SelectSupplierList
+                rfqId={rfqId}
+                rec={rec}
+                pickedVendorId={selectedVendorId}
+                onPick={setSelectedVendorId}
+                selection={selection}
+                onSaved={(s) => {
+                  setSelection(s);
+                  setSelectedVendorId(s.vendorId);
+                }}
+              />
+            )
+          )}
+        </>
       )}
 
       {/* 5 & 6. Pricing reference points */}
@@ -813,12 +793,12 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
               key: 'deal' as const,
               label: 'Estimated Deal Value',
               value: estimatedDealValue,
-              formula: "Estimated Deal Value = Requested Quantity × the recommended supplier's Quoted Price.",
+              formula: "Estimated Deal Value = Requested Quantity × the selected supplier's Quoted Price.",
               input:
                 dealQty != null && dealUnitPrice != null
-                  ? `requested_qty = ${dealQty} ${prLine.unit_of_measure}  ×  quoted_price (${leadQuote?.vendor_name || leadQuote?.vendor_id || '—'}) = ${formatINR(dealUnitPrice)}`
+                  ? `requested_qty = ${dealQty} ${prLine.unit_of_measure}  ×  quoted_price (${selectedQuote?.vendor_name || selectedQuote?.vendor_id || '—'}) = ${formatINR(dealUnitPrice)}`
                   : '',
-              unavailable: 'No quotation is available yet to value this deal.',
+              unavailable: 'Pick a supplier in Select Supplier to value this deal.',
             },
           ].map((m) => (
             <div key={m.key} className="min-w-[180px]">
@@ -852,27 +832,34 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         </div>
       </div>
 
-      {/* Hands off the PR, RFQ, and checked supplier(s) to the award review
-          below. Disabled until at least one supplier is selected. */}
+      {/* Hands off the PR, RFQ, and the selected supplier to the award review
+          above. Disabled until a selection is confirmed and saved. */}
       <div
         className="rounded-xl flex items-center justify-end gap-3 px-4 py-3 mt-4"
         style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
       >
+        {!readyForApproval && (
+          <p className="text-[11px] mr-auto" style={{ color: COLORS.text.tertiary }}>
+            {header?.rfq_status === 'Awarded'
+              ? 'This RFQ is already awarded.'
+              : 'Run the AI Recommendation, then select and confirm one supplier.'}
+          </p>
+        )}
         <button
-          disabled={selectedVendorIds.size === 0}
+          disabled={!readyForApproval}
           onClick={() => {
-            if (selectedVendorIds.size === 0) return;
+            if (!readyForApproval) return;
             setShowAwardReview(true);
           }}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold"
           style={{
-            backgroundColor: selectedVendorIds.size > 0 ? TEAL.base : COLORS.lightGray,
-            color: selectedVendorIds.size > 0 ? COLORS.white : COLORS.text.tertiary,
-            cursor: selectedVendorIds.size > 0 ? 'pointer' : 'not-allowed',
+            backgroundColor: readyForApproval ? TEAL.base : COLORS.lightGray,
+            color: readyForApproval ? COLORS.white : COLORS.text.tertiary,
+            cursor: readyForApproval ? 'pointer' : 'not-allowed',
           }}
         >
           <Icon icon="mdi:clipboard-check-outline" className="w-4 h-4" />
-          Proceed to Approval {selectedVendorIds.size > 0 && `(${selectedVendorIds.size} selected)`}
+          Proceed to Approval
         </button>
       </div>
     </div>

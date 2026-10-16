@@ -50,10 +50,12 @@ export class DirectPostgresTransport implements SourceTransport {
   }
 
   async disconnect(): Promise<void> {
-    if (this.pool) {
-      await this.pool.end();
+    const pool = this.pool;
+    if (pool) {
+      // Detach before awaiting, so a pool created meanwhile is never cleared.
       this.pool = null;
       this.lastHealthCheck = 0;
+      await pool.end();
       console.log(`[DirectPostgres:${this.tag}] Connection pool closed`);
     }
   }
@@ -82,7 +84,8 @@ export class DirectPostgresTransport implements SourceTransport {
         const isConnErr = this.isConnectionError(error);
         if (isConnErr && attempt === 1) {
           console.warn(`[DirectPostgres:${this.tag}] Connection error, resetting pool and retrying:`, error.message || error.code);
-          await this.resetPool();
+          // Only the pool this query used: a concurrent request may already have replaced it.
+          await this.resetPool(pool);
           continue;
         }
         const msg = error.message || 'Unknown database error';
@@ -148,10 +151,9 @@ export class DirectPostgresTransport implements SourceTransport {
     return newPool;
   }
 
-  private async validatePoolConnection(): Promise<boolean> {
-    if (!this.pool) return false;
+  private async validatePoolConnection(pool: pg.Pool): Promise<boolean> {
     try {
-      await this.pool.query('SELECT 1 as health_check');
+      await pool.query('SELECT 1 as health_check');
       return true;
     } catch (error) {
       console.warn(`[DirectPostgres:${this.tag}] Pool health check failed:`, (error as Error).message);
@@ -159,15 +161,23 @@ export class DirectPostgresTransport implements SourceTransport {
     }
   }
 
-  private async resetPool(): Promise<void> {
-    if (this.pool) {
-      try {
-        console.log(`[DirectPostgres:${this.tag}] Closing stale connection pool...`);
-        await this.pool.end();
-      } catch (error) {
-        console.warn(`[DirectPostgres:${this.tag}] Error closing stale pool:`, (error as Error).message);
-      }
+  /**
+   * Closes `stale` (default: the current pool). It is detached before the
+   * await, and only if it is still the current pool, so a pool another request
+   * created in the meantime is never cleared — clearing it handed concurrent
+   * queries a null pool ("Cannot read properties of null (reading 'query')").
+   */
+  private async resetPool(stale: pg.Pool | null = this.pool): Promise<void> {
+    if (!stale) return;
+    if (this.pool === stale) {
       this.pool = null;
+      this.lastHealthCheck = 0;
+    }
+    try {
+      console.log(`[DirectPostgres:${this.tag}] Closing stale connection pool...`);
+      await stale.end();
+    } catch (error) {
+      console.warn(`[DirectPostgres:${this.tag}] Error closing stale pool:`, (error as Error).message);
     }
   }
 
@@ -180,34 +190,38 @@ export class DirectPostgresTransport implements SourceTransport {
     }
 
     this.poolReady = (async () => {
+      // Work on local references: this.pool can change during any await below.
+      let created: pg.Pool | null = null;
       try {
-        if (this.pool && (Date.now() - this.lastHealthCheck) <= HEALTH_CHECK_INTERVAL) {
-          return this.pool;
+        const current = this.pool;
+        if (current && (Date.now() - this.lastHealthCheck) <= HEALTH_CHECK_INTERVAL) {
+          return current;
         }
 
-        if (this.pool) {
+        if (current) {
           console.log(`[DirectPostgres:${this.tag}] Validating pool connection after idle period...`);
-          const isHealthy = await this.validatePoolConnection();
+          const isHealthy = await this.validatePoolConnection(current);
           if (isHealthy) {
             this.lastHealthCheck = Date.now();
             console.log(`[DirectPostgres:${this.tag}] Pool connection validated successfully`);
-            return this.pool;
+            return current;
           }
           console.warn(`[DirectPostgres:${this.tag}] Pool connection is stale, recreating...`);
-          await this.resetPool();
+          await this.resetPool(current);
         }
 
         console.log(`[DirectPostgres:${this.tag}] Creating new connection pool...`);
-        this.pool = this.createPool();
+        created = this.createPool();
+        this.pool = created;
 
-        const result = await this.pool.query('SELECT NOW() as server_time');
+        const result = await created.query('SELECT NOW() as server_time');
         console.log(`[DirectPostgres:${this.tag}] Connected to ${this.cfg.host}/${this.cfg.database}, server time:`, result.rows[0].server_time);
 
         this.lastHealthCheck = Date.now();
-        return this.pool;
+        return created;
       } catch (error) {
         console.error(`[DirectPostgres:${this.tag}] Error initializing connection pool:`, error);
-        this.pool = null;
+        if (created && this.pool === created) this.pool = null;
         throw error;
       } finally {
         this.poolReady = null;
@@ -248,6 +262,8 @@ export class DirectPostgresTransport implements SourceTransport {
       'connection pool destroyed',
       'connection has been closed',
       'connection is closed',
+      // A query handed a pool that a concurrent reset just closed: retry on a fresh one.
+      'cannot use a pool after calling end',
     ];
     return connectionErrorPatterns.some((p) => message.includes(p));
   }

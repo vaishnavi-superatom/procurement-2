@@ -370,9 +370,16 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
               <p className="text-xs mb-0.5 truncate" style={{ color: COLORS.text.secondary }}>
                 {kpi.label}
               </p>
-              <p className="text-2xl font-bold" style={{ color: COLORS.text.primary }}>
-                {kpi.value === undefined ? (kpiLoading ? '—' : 0) : kpi.value}
-              </p>
+              {kpiLoading ? (
+                // Same height as the number line, so nothing shifts when it lands.
+                <div className="h-8 flex items-center" aria-label="Loading">
+                  <div className="h-6 w-12 bg-[#E2E8F0] rounded animate-pulse" />
+                </div>
+              ) : (
+                <p className="text-2xl font-bold" style={{ color: COLORS.text.primary }}>
+                  {kpi.value ?? 0}
+                </p>
+              )}
             </div>
           );
         })}

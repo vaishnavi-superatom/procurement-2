@@ -3,6 +3,7 @@ import { Icon } from '@iconify/react';
 import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, SHADOWS } from '../../design-system/tokens';
 import LoadingState from '../../components/LoadingState';
+import PRComments from './PRComments';
 
 interface PurchaseRequestsProps {
   SA_RUNTIME?: any;
@@ -42,7 +43,7 @@ const TEAL = {
 
 // ============================================================
 // Real data shapes (public.purchase_requisitions / material_master /
-// inventory / rfq_events / quotations / vendor_master — the live
+// inventory / rfq_events / purchase_orders / vendor_master — the live
 // "PostgreSQL Connection" source registered for this project).
 // ============================================================
 
@@ -107,18 +108,23 @@ interface RfqRow {
   quotes_received: number;
   awarded_vendor_id: string | null;
   awarded_price: number | null;
-  rfq_status: 'Awarded' | 'In Negotiation';
+  rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   negotiation_rounds: number;
 }
 
+// A vendor we've bought this material (or a similar one) from before —
+// "past selections", per the sourcing review.
 interface CandidateVendor {
   vendor_id: string;
   vendor_name: string;
   vendor_type: string;
-  category_specialization: string;
   city: string;
   state: string;
   payment_terms: string;
+  orders: number;
+  last_order_date: string;
+  last_price: number | null;
+  basis: 'material' | 'similar';
 }
 
 type TimeFilter = 'All Time' | 'Today' | 'This Week' | 'This Month' | 'This Year';
@@ -141,7 +147,7 @@ const RFQ_FILTER_DESCRIPTIONS: Record<RfqFilter, string> = {
 // Query helpers
 //
 // This project's live business data (purchase_requisitions, inventory,
-// rfq_events, vendor_master, ...) is registered as a per-project source,
+// rfq_events, purchase_orders, vendor_master, ...) is registered as a per-project source,
 // not a static DATABASE_URL — so it's queried through window.SA.ToolExecutor
 // against that source's generated "<sourceId>_query" tool (see
 // backend/src/sources/core/base-source.ts getToolId/getToolName), the same
@@ -267,6 +273,13 @@ const groupKeyFor = (row: PRListRow, groupBy: GroupBy): string => {
 // ============================================================
 // Small shared bits
 // ============================================================
+
+// An RFQ stays "RFQ Received" until the buyer starts negotiating.
+const RFQ_STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
+  'RFQ Received': { bg: '#E0F2FE', fg: '#0284C7' },
+  'In Negotiation': { bg: '#FFEDD5', fg: '#EA580C' },
+  Awarded: { bg: '#DCFCE7', fg: '#16A34A' },
+};
 
 const UrgencyBadge: React.FC<{ urgency: string }> = ({ urgency }) => {
   const high = urgency === 'High';
@@ -429,7 +442,7 @@ const METADATA: ComponentMetadata = {
   displayName: 'Show purchase requests dashboard',
   isDisplayComp: true,
   type: 'PurchaseRequests',
-  description: 'Purchase requisitions list and detail view, sourced from the live purchase_requisitions/inventory/rfq_events data',
+  description: 'Purchase requisitions list and detail view, sourced from the live purchase_requisitions/inventory/rfq_events/purchase_orders data',
   category: 'Dashboard',
   keywords: ['purchase', 'requests', 'pr', 'requisition', 'rfq', 'procurement'],
   dashboard: { label: 'Purchase Requisitions', icon: 'mdi:cart-outline', order: 1 },
@@ -785,22 +798,38 @@ const PRDetailScreen: React.FC<{
         setInventory(invRows);
         setRfqs(rfqRows);
 
+        // No RFQ yet: suggest vendors from past purchase orders for these
+        // materials, then for similar ones (same subgroup) so a rarely-bought
+        // material still gets candidates. Last price only for the exact material.
         if (rfqRows.length === 0) {
-          const materialGroup = lineRows[0]?.material_group;
-          if (materialGroup) {
-            const vendors = await runTool<CandidateVendor>(
-              `
-              SELECT vendor_id, vendor_name, vendor_type, category_specialization, city, state, payment_terms
-              FROM vendor_master
-              WHERE is_active = true AND category_specialization ILIKE @materialGroupPattern
-              ORDER BY CASE vendor_type WHEN 'Strategic' THEN 0 WHEN 'Preferred' THEN 1 WHEN 'Approved' THEN 2 ELSE 3 END, vendor_name
-              LIMIT 6;
-              `,
-              { materialGroupPattern: `%${materialGroup}%` },
-              SA_RUNTIME
-            );
-            if (!cancelled) setCandidateVendors(vendors);
-          }
+          const vendors = await runTool<CandidateVendor>(
+            `
+            WITH line AS (
+              SELECT material_id, material_subgroup FROM material_master WHERE material_id = ANY(@materialIds)
+            ),
+            past AS (
+              SELECT po.vendor_id, po.po_id, po.po_date,
+                     CASE WHEN po.material_id IN (SELECT material_id FROM line) THEN 'material' ELSE 'similar' END AS basis
+              FROM purchase_orders po
+              JOIN material_master m ON m.material_id = po.material_id
+              WHERE m.material_subgroup IN (SELECT material_subgroup FROM line)
+            )
+            SELECT v.vendor_id, v.vendor_name, v.vendor_type, v.city, v.state, v.payment_terms,
+                   COUNT(DISTINCT p.po_id) AS orders, MAX(p.po_date) AS last_order_date, MIN(p.basis) AS basis,
+                   (SELECT po2.unit_price FROM purchase_orders po2
+                     WHERE po2.vendor_id = v.vendor_id AND po2.material_id = ANY(@materialIds)
+                     ORDER BY po2.po_date DESC LIMIT 1) AS last_price
+            FROM past p
+            JOIN vendor_master v ON v.vendor_id = p.vendor_id
+            WHERE v.is_active = true
+            GROUP BY v.vendor_id, v.vendor_name, v.vendor_type, v.city, v.state, v.payment_terms
+            ORDER BY MIN(p.basis), COUNT(DISTINCT p.po_id) DESC, MAX(p.po_date) DESC
+            LIMIT 6;
+            `,
+            { materialIds },
+            SA_RUNTIME
+          );
+          if (!cancelled) setCandidateVendors(vendors);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load this purchase request');
@@ -873,7 +902,7 @@ const PRDetailScreen: React.FC<{
         </div>
       </div>
 
-      {/* Scrollable body — line items, inventory, sourcing */}
+      {/* Scrollable body — line items, RFQ status or sourcing, stock */}
       <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
         <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
           <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
@@ -929,8 +958,8 @@ const PRDetailScreen: React.FC<{
                       <span
                         className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
                         style={{
-                          backgroundColor: r.rfq_status === 'Awarded' ? '#DCFCE7' : '#FFEDD5',
-                          color: r.rfq_status === 'Awarded' ? '#16A34A' : '#EA580C',
+                          backgroundColor: (RFQ_STATUS_STYLE[r.rfq_status] ?? RFQ_STATUS_STYLE['In Negotiation']).bg,
+                          color: (RFQ_STATUS_STYLE[r.rfq_status] ?? RFQ_STATUS_STYLE['In Negotiation']).fg,
                         }}
                       >
                         {r.rfq_status}
@@ -942,25 +971,26 @@ const PRDetailScreen: React.FC<{
                 ))}
               </tbody>
             </table>
-            <div className="px-4 py-3" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-              {/* No-op when onEvaluateRfq isn't wired up (e.g. the standalone
-                  Purchase Requests page, which has no RFQ experience alongside it). */}
-              <button
-                onClick={() => onEvaluateRfq?.({ prId: header.pr_id, rfqId: rfqs.length === 1 ? rfqs[0].rfq_id : undefined })}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold"
-                style={{ backgroundColor: TEAL.base, color: COLORS.white }}
-              >
-                <Icon icon="mdi:clipboard-check-outline" className="w-4 h-4" />
-                {rfqs.length === 1 ? 'Evaluate RFQ' : "Evaluate RFQ's"}
-              </button>
-            </div>
+            {/* Only where the RFQ experience is wired up (not on the standalone
+                Purchase Requests page, which has nothing to open). */}
+            {onEvaluateRfq && (
+              <div className="px-4 py-3 flex justify-end" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                <button
+                  onClick={() => onEvaluateRfq({ prId: header.pr_id, rfqId: rfqs.length === 1 ? rfqs[0].rfq_id : undefined })}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold"
+                  style={{ backgroundColor: TEAL.base, color: COLORS.white }}
+                >
+                  <Icon icon="mdi:clipboard-check-outline" className="w-4 h-4" />
+                  {rfqs.length === 1 ? 'Evaluate RFQ' : "Evaluate RFQ's"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         {/* For a PR with no RFQ yet, sourcing is the next action — shown right
-            after the line items, ahead of Available Stock. Once an RFQ exists,
-            this is skipped (covered by the RFQ Status section above instead),
-            so Available Stock naturally follows it there, unchanged. */}
+            after the line items. Once an RFQ exists this is skipped; the RFQ
+            Status section above covers it, and no RFQ data shows here. */}
         {rfqs.length === 0 && (
           <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
             <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
@@ -969,12 +999,12 @@ const PRDetailScreen: React.FC<{
             {candidateVendors.length > 0 ? (
               <div className="px-4 py-3">
                 <p className="text-xs mb-3" style={{ color: COLORS.text.secondary }}>
-                  No RFQ exists yet. Candidate vendors for {header.material_group || 'this material group'}:
+                  No RFQ exists yet. Vendors we've bought this material, or similar items, from before:
                 </p>
                 <table className="w-full text-sm">
                   <thead>
                     <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                      {['Vendor', 'Type', 'Specialization', 'Location', 'Payment Terms'].map((h) => (
+                      {['Vendor', 'Location', 'Payment Terms', 'Past Orders', 'Last Ordered', 'Last Price'].map((h) => (
                         <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                           {h}
                         </th>
@@ -984,11 +1014,17 @@ const PRDetailScreen: React.FC<{
                   <tbody>
                     {candidateVendors.map((v) => (
                       <tr key={v.vendor_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                        <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{v.vendor_name}</td>
-                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.vendor_type}</td>
-                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.category_specialization}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                          <span className="font-medium">{v.vendor_name}</span>
+                          <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+                            {v.vendor_type} · {v.basis === 'material' ? 'bought this material' : 'bought similar items'}
+                          </div>
+                        </td>
                         <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.city}, {v.state}</td>
                         <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.payment_terms}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.orders}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatDate(v.last_order_date)}</td>
+                        <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatINR(v.last_price)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -996,12 +1032,14 @@ const PRDetailScreen: React.FC<{
               </div>
             ) : (
               <p className="px-4 py-4 text-xs" style={{ color: COLORS.text.tertiary }}>
-                No existing RFQ and no active vendors found for this material group.
+                No RFQ yet, and we haven't bought this material or similar items before.
               </p>
             )}
           </div>
         )}
 
+        {/* Kept for now: removing stock from this screen was discussed (it gets
+            its own area of the product) but isn't decided — see TODO.md §1. */}
         <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
           <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
             <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Available Stock</h2>
@@ -1040,6 +1078,13 @@ const PRDetailScreen: React.FC<{
             </table>
           )}
         </div>
+
+      </div>
+
+      {/* Comments are docked at the bottom, outside the scroll, so they stay
+          reachable from anywhere in the PR; the panel opens upward. */}
+      <div className="flex-shrink-0 pt-3">
+        <PRComments prId={header.pr_id} />
       </div>
     </div>
   );

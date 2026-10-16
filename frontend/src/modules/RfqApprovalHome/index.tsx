@@ -50,7 +50,7 @@ interface RfqHeader {
   material_id: string;
   rfq_date: string;
   response_deadline: string;
-  rfq_status: 'Awarded' | 'In Negotiation';
+  rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   negotiation_rounds: number;
   awarded_vendor_id: string | null;
   awarded_price: number | null;
@@ -80,6 +80,21 @@ interface NegotiatedQuote {
   sanctions_flag: boolean | null;
   ecovadis_score: number | null;
   sustainability_tier: string | null;
+  /** From technical evaluation (rfq_vendor_ranking). */
+  t_rank: string | null;
+  l_rank: string | null;
+}
+
+/** The buyer's saved pick for this vendor (rfq_supplier_selections), with the
+ * recommendation it was made against. */
+interface SupplierSelectionRow {
+  is_deviation: boolean;
+  deviation_comment: string | null;
+  selected_by: string | null;
+  created_at: string;
+  recommended_vendor_name: string | null;
+  combined_rank: string | null;
+  rationale: string | null;
 }
 
 interface CommodityPriceRow {
@@ -152,6 +167,7 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
   const [header, setHeader] = useState<RfqHeader | null>(null);
   const [quote, setQuote] = useState<NegotiatedQuote | null>(null);
   const [commodityPrices, setCommodityPrices] = useState<CommodityPriceRow[]>([]);
+  const [selection, setSelection] = useState<SupplierSelectionRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -167,7 +183,7 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
           throw new Error('Invalid PR, RFQ, material, or vendor id');
         }
 
-        const [prRows, headerRows, quoteRows] = await Promise.all([
+        const [prRows, headerRows, quoteRows, selectionRows] = await Promise.all([
           runTool<PRLine>(
             `
             SELECT pr.pr_id, pr.material_id, pr.requested_qty, pr.unit_of_measure, pr.estimated_price,
@@ -195,16 +211,32 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
                    q.quoted_price, q.quoted_qty, q.delivery_days, q.payment_terms, q.warranty_months,
                    q.is_technically_compliant, q.is_awarded, q.quote_date,
                    sc.otd_pct, sc.otd_trend, sc.quality_acceptance_pct, sc.financial_risk_tier, sc.overall_risk,
-                   sc.sanctions_flag, sc.ecovadis_score, sc.sustainability_tier
+                   sc.sanctions_flag, sc.ecovadis_score, sc.sustainability_tier, rk.t_rank, rk.l_rank
             FROM quotations q
             LEFT JOIN vendor_master v ON v.vendor_id = q.vendor_id
             LEFT JOIN supplier_scorecard sc ON sc.vendor_id = q.vendor_id
+            LEFT JOIN rfq_vendor_ranking rk ON rk.quote_id = q.quote_id
             WHERE q.rfq_id = @rfqId AND q.vendor_id = @vendorId
             LIMIT 1;
             `,
             { rfqId, vendorId },
             SA_RUNTIME
           ),
+          // Optional context: an RFQ awarded before Select Supplier existed has none.
+          runTool<SupplierSelectionRow>(
+            `
+            SELECT s.is_deviation, s.deviation_comment, s.selected_by, s.created_at,
+                   rv.vendor_name AS recommended_vendor_name, rr.combined_rank, rr.rationale
+            FROM rfq_supplier_selections s
+            LEFT JOIN vendor_master rv ON rv.vendor_id = s.recommended_vendor_id
+            LEFT JOIN rfq_recommendations rr ON rr.id = s.recommendation_id
+            WHERE s.rfq_id = @rfqId AND s.vendor_id = @vendorId
+            ORDER BY s.created_at DESC
+            LIMIT 1;
+            `,
+            { rfqId, vendorId },
+            SA_RUNTIME
+          ).catch(() => [] as SupplierSelectionRow[]),
         ]);
         if (cancelled) return;
         if (prRows.length === 0) throw new Error(`No purchase requisition line found for ${prId} / ${materialId}`);
@@ -212,6 +244,7 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
         setPrLine(prRows[0]);
         setHeader(headerRows[0] ?? null);
         setQuote(quoteRows[0]);
+        setSelection(selectionRows[0] ?? null);
 
         const commodityCode = prRows[0].primary_commodity;
         if (commodityCode && SAFE_ID.test(commodityCode)) {
@@ -284,7 +317,9 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
   const awardedToThisVendor = alreadyAwarded && header?.awarded_vendor_id === vendorId;
 
   const evidence: string[] = [
-    quote.is_technically_compliant ? 'Technically compliant with the RFQ requirements.' : 'Not marked technically compliant.',
+    quote.t_rank
+      ? `Technical rank ${quote.t_rank}${quote.l_rank ? `, price rank ${quote.l_rank}` : ''} (T and L are ranked independently).`
+      : quote.is_technically_compliant ? 'Technically compliant with the RFQ requirements.' : 'Not marked technically compliant.',
     `Delivery in ${quote.delivery_days} days, payment terms ${quote.payment_terms}, warranty ${quote.warranty_months} months.`,
   ];
   if (quote.otd_pct != null) evidence.push(`On-time delivery track record: ${quote.otd_pct}%${quote.otd_trend ? ` (${quote.otd_trend.toLowerCase()})` : ''}.`);
@@ -388,6 +423,40 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
           </div>
         </div>
       </div>
+
+      {/* Why the buyer chose this supplier — the approver's main question */}
+      {selection && (
+        <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
+          <div className="px-4 py-3 flex items-center justify-between gap-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Selection</h2>
+            <span
+              className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
+              style={selection.is_deviation ? { backgroundColor: '#FFEDD5', color: '#EA580C' } : { backgroundColor: TEAL.tint, color: TEAL.dark }}
+            >
+              {selection.is_deviation ? 'Differs from recommendation' : 'Recommended supplier'}
+            </span>
+          </div>
+          <div className="px-4 py-3 space-y-1.5 text-xs" style={{ color: COLORS.text.secondary }}>
+            {selection.is_deviation ? (
+              <>
+                <p>
+                  Recommended:{' '}
+                  <span className="font-medium" style={{ color: COLORS.text.primary }}>{selection.recommended_vendor_name || '—'}</span>
+                  {selection.combined_rank && ` (${selection.combined_rank})`}
+                </p>
+                <p>
+                  Buyer's reason: <span style={{ color: COLORS.text.primary }}>"{selection.deviation_comment}"</span>
+                </p>
+              </>
+            ) : (
+              selection.rationale && <p style={{ color: COLORS.text.primary }}>{selection.rationale}</p>
+            )}
+            <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+              Selected{selection.selected_by ? ` by ${selection.selected_by}` : ''} on {formatDate(selection.created_at)}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Supporting evidence */}
       <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>

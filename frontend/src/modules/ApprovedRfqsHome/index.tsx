@@ -63,7 +63,7 @@ interface ApprovedRfqRow {
   awarded_vendor_id: string | null;
   awarded_vendor_name: string | null;
   awarded_price: number | null;
-  rfq_status: 'Awarded' | 'In Negotiation';
+  rfq_status: 'RFQ Received' | 'In Negotiation' | 'Awarded';
   rfq_date: string;
   awarded_quote_date: string | null;
 }
