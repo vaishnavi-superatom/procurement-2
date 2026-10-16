@@ -9,7 +9,7 @@
 
 export const COLORS = {
   // Primary Colors
-  primary: '#4A7FFF',
+  primary: '#3A59CD',
   darkNavy: '#1E293B',
   darkNavyAlt: '#2D3748',
   lightBackground: '#F8F9FB',
@@ -35,7 +35,7 @@ export const COLORS = {
 
   // Chart Colors
   chart: {
-    positive: '#4A7FFF',
+    positive: '#3A59CD',
     negative: '#FF6B4A',
     secondary: '#C084FC',
     tertiary: '#22D3EE',
@@ -361,7 +361,7 @@ export const CHART_COLORS = {
 // 30 visually distinct colors for charts with many series/categories
 // (scatter, line, pie, bar, treemap, radar). Brand colors first, then extended shades.
 export const CHART_COLOR_PALETTE: string[] = [
-  COLORS.primary,        // #4A7FFF blue
+  COLORS.primary,        // #3A59CD blue
   COLORS.success,        // #4ADE80 green
   COLORS.warning,        // #FB923C orange
   COLORS.chart.secondary,// #C084FC purple
