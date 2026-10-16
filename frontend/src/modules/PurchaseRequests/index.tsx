@@ -43,7 +43,7 @@ const TEAL = {
 
 // ============================================================
 // Real data shapes (public.purchase_requisitions / material_master /
-// inventory / rfq_events / purchase_orders / vendor_master — the live
+// rfq_events / purchase_orders / vendor_master — the live
 // "PostgreSQL Connection" source registered for this project).
 // ============================================================
 
@@ -85,17 +85,6 @@ interface PRLine {
   unspsc_title: string | null;
   standard_price: number | null;
   lead_time_days: number | null;
-  safety_stock: number | null;
-}
-
-interface InventoryRow {
-  material_id: string;
-  plant_code: string;
-  current_stock: number;
-  reserved_stock: number;
-  last_receipt_date: string | null;
-  last_issue_date: string | null;
-  reorder_point: number;
 }
 
 interface RfqRow {
@@ -146,7 +135,7 @@ const RFQ_FILTER_DESCRIPTIONS: Record<RfqFilter, string> = {
 // ============================================================
 // Query helpers
 //
-// This project's live business data (purchase_requisitions, inventory,
+// This project's live business data (purchase_requisitions,
 // rfq_events, purchase_orders, vendor_master, ...) is registered as a per-project source,
 // not a static DATABASE_URL — so it's queried through window.SA.ToolExecutor
 // against that source's generated "<sourceId>_query" tool (see
@@ -442,7 +431,7 @@ const METADATA: ComponentMetadata = {
   displayName: 'Show purchase requests dashboard',
   isDisplayComp: true,
   type: 'PurchaseRequests',
-  description: 'Purchase requisitions list and detail view, sourced from the live purchase_requisitions/inventory/rfq_events/purchase_orders data',
+  description: 'Purchase requisitions list and detail view, sourced from the live purchase_requisitions/rfq_events/purchase_orders data',
   category: 'Dashboard',
   keywords: ['purchase', 'requests', 'pr', 'requisition', 'rfq', 'procurement'],
   dashboard: { label: 'Purchase Requisitions', icon: 'mdi:cart-outline', order: 1 },
@@ -742,7 +731,6 @@ const PRDetailScreen: React.FC<{
   onEvaluateRfq?: (args: { prId: string; rfqId?: string }) => void;
 }> = ({ prId, onBack, SA_RUNTIME, onEvaluateRfq }) => {
   const [lines, setLines] = useState<PRLine[] | null>(null);
-  const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [rfqs, setRfqs] = useState<RfqRow[]>([]);
   const [candidateVendors, setCandidateVendors] = useState<CandidateVendor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -759,7 +747,7 @@ const PRDetailScreen: React.FC<{
 
         const lineRows = await runTool<PRLine>(
           `
-          SELECT pr.*, m.material_desc, m.material_group, m.unspsc_title, m.standard_price, m.lead_time_days, m.safety_stock
+          SELECT pr.*, m.material_desc, m.material_group, m.unspsc_title, m.standard_price, m.lead_time_days
           FROM purchase_requisitions pr
           LEFT JOIN material_master m ON m.material_id = pr.material_id
           WHERE pr.pr_id = @prId
@@ -773,29 +761,19 @@ const PRDetailScreen: React.FC<{
         setLines(lineRows);
 
         const materialIds = Array.from(new Set(lineRows.map((l) => l.material_id)));
-        const plantCodes = Array.from(new Set(lineRows.map((l) => l.plant_code)));
 
-        const [invRows, rfqRows] = await Promise.all([
-          materialIds.length
-            ? runTool<InventoryRow>(
-                `SELECT * FROM inventory WHERE material_id = ANY(@materialIds) AND plant_code = ANY(@plantCodes);`,
-                { materialIds, plantCodes },
-                SA_RUNTIME
-              )
-            : Promise.resolve([]),
-          runTool<RfqRow>(
-            `
-            SELECT rfq.*
-            FROM rfq_events rfq
-            WHERE rfq.pr_id = @prId
-            ORDER BY rfq.rfq_date DESC;
-            `,
-            { prId },
-            SA_RUNTIME
-          ),
-        ]);
+        // Stock isn't shown here: it gets its own area of the product (product review, Oct 16).
+        const rfqRows = await runTool<RfqRow>(
+          `
+          SELECT rfq.*
+          FROM rfq_events rfq
+          WHERE rfq.pr_id = @prId
+          ORDER BY rfq.rfq_date DESC;
+          `,
+          { prId },
+          SA_RUNTIME
+        );
         if (cancelled) return;
-        setInventory(invRows);
         setRfqs(rfqRows);
 
         // No RFQ yet: suggest vendors from past purchase orders for these
@@ -902,7 +880,7 @@ const PRDetailScreen: React.FC<{
         </div>
       </div>
 
-      {/* Scrollable body — line items, RFQ status or sourcing, stock */}
+      {/* Scrollable body — line items, then RFQ status or sourcing */}
       <div className="flex-1 min-h-0 overflow-auto space-y-4 pr-1">
         <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
           <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
@@ -1037,47 +1015,6 @@ const PRDetailScreen: React.FC<{
             )}
           </div>
         )}
-
-        {/* Kept for now: removing stock from this screen was discussed (it gets
-            its own area of the product) but isn't decided — see TODO.md §1. */}
-        <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-          <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-            <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Available Stock</h2>
-          </div>
-          {inventory.length === 0 ? (
-            <p className="px-4 py-4 text-xs" style={{ color: COLORS.text.tertiary }}>No inventory record for these materials at {header.plant_code}.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                  {['Material', 'Plant', 'On Hand', 'Reserved', 'Available', 'Reorder Point'].map((h) => (
-                    <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {inventory.map((inv) => {
-                  const available = inv.current_stock - inv.reserved_stock;
-                  const line = lines.find((l) => l.material_id === inv.material_id);
-                  return (
-                    <tr key={`${inv.material_id}-${inv.plant_code}`} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>{line?.material_desc || inv.material_id}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.plant_code}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.current_stock}</td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.reserved_stock}</td>
-                      <td className="px-4 py-2 font-medium" style={{ color: available >= (line?.requested_qty || 0) ? '#16A34A' : '#475569' }}>
-                        {available}
-                      </td>
-                      <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{inv.reorder_point}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
 
       </div>
 
