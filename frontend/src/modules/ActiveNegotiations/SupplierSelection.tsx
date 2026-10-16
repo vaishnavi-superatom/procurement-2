@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { COLORS, SHADOWS } from '../../design-system/tokens';
 import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
-import { aiRanking, RANK_HELP, type RankedVendor, type SupplierRecommendation } from '../../data/rfq-recommendation';
+import { aiRanking, RANK_HELP, type RankedVendor, type RecommendationPoint, type SupplierRecommendation } from '../../data/rfq-recommendation';
 import { selectSupplier, type SupplierSelection } from '../../data/rfq-workflow';
 
 const TEAL = {
@@ -44,19 +44,19 @@ export const LRankBadge: React.FC<{ rank: string | null | undefined }> = ({ rank
     <span className="text-[11px]" style={{ color: COLORS.text.tertiary }}>—</span>
   );
 
-/** Place in the AI Recommendation's order: 1 = recommended, then by combined score. */
+/** Place in the System Recommendation's order: 1 = recommended, then by combined score. */
 export const AiRankBadge: React.FC<{ rank: number | null | undefined }> = ({ rank }) =>
   rank ? (
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
       style={rank === 1 ? { backgroundColor: TEAL.base, color: COLORS.white } : { backgroundColor: COLORS.lightGray, color: COLORS.text.secondary }}
-      title={rank === 1 ? 'Recommended by the AI' : undefined}
+      title={rank === 1 ? 'Recommended by the system' : undefined}
     >
       {rank === 1 && <Icon icon="mdi:creation" className="w-3 h-3" />}
       {rank}
     </span>
   ) : (
-    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the AI Recommendation to rank">
+    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the System Recommendation to rank">
       —
     </span>
   );
@@ -65,6 +65,26 @@ const weightsText = (rec: SupplierRecommendation): string =>
   `${Math.round((rec.weights?.price ?? 0.6) * 100)}% price rank (L), ${Math.round((rec.weights?.technical ?? 0.4) * 100)}% technical rank (T)`;
 
 const cardStyle = { border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card };
+
+// The reason as short points with side headings (meeting, 16 Oct: "4 to 5
+// bullet points… side headings, like pricing… risk").
+const PointList: React.FC<{ points: RecommendationPoint[]; className: string; headingColor: string; textColor: string }> = ({
+  points,
+  className,
+  headingColor,
+  textColor,
+}) => (
+  <ul className={className}>
+    {points.map((p) => (
+      <li key={p.heading} className="flex gap-3 leading-relaxed">
+        <span className="w-18 flex-shrink-0 font-semibold" style={{ color: headingColor }}>
+          {p.heading}
+        </span>
+        <span style={{ color: textColor }}>{p.text}</span>
+      </li>
+    ))}
+  </ul>
+);
 
 /** The recommended supplier and why. Advisory: the buyer still chooses. */
 export const RecommendationCard: React.FC<{
@@ -80,7 +100,7 @@ export const RecommendationCard: React.FC<{
         <div>
           <h2 className="text-sm font-semibold flex items-center gap-1.5" style={{ color: COLORS.text.primary }}>
             <Icon icon="mdi:creation-outline" className="w-4 h-4" style={{ color: TEAL.base }} />
-            AI Recommendation
+            System Recommendation
           </h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
             Advisory. You choose the supplier below; choosing a different one needs a short reason.
@@ -125,21 +145,23 @@ export const RecommendationCard: React.FC<{
                 </span>
               )}
             </div>
-            {rec.rationale && <p className="text-xs leading-relaxed" style={{ color: COLORS.text.primary }}>{rec.rationale}</p>}
-            {rec.considerations.length > 0 && (
-              <ul className="text-xs space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
-                {rec.considerations.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            )}
-            {!rec.agreesWithScore && (
-              <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-                Note: this is not the top combined score ({weightsText(rec)}); the reason above explains why.
-              </p>
+            {rec.points?.length ? (
+              <PointList points={rec.points} className="text-xs space-y-1.5 pt-0.5" headingColor={COLORS.text.secondary} textColor={COLORS.text.primary} />
+            ) : (
+              <>
+                {rec.rationale && <p className="text-xs leading-relaxed" style={{ color: COLORS.text.primary }}>{rec.rationale}</p>}
+                {rec.considerations.length > 0 && (
+                  <ul className="text-xs space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
+                    {rec.considerations.map((c, i) => (
+                      <li key={i}>{c}</li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
             <p className="text-[10px]" style={{ color: COLORS.text.tertiary }}>
-              {rec.recommendationSource === 'ai' ? 'AI recommendation' : 'Top combined score (AI unavailable)'}
+              {rec.recommendationSource === 'ai' ? 'System recommendation' : 'Based on the combined score of price and technical rank'}
+              {!rec.agreesWithScore && <span title={weightsText(rec)}> · not the top combined score</span>}
               {rec.createdAt ? ` · ${rec.reused ? 'saved' : 'made'} ${formatTime(rec.createdAt)}` : ''}
             </p>
           </div>
@@ -357,10 +379,14 @@ const SelectionModal: React.FC<{
                 You're selecting <b>{vendor.vendorName}</b> ({vendor.lRank}, {vendor.tRank}), the recommended supplier, at{' '}
                 {formatINR(vendor.quotedPrice)} / {rec.unit} with delivery in {vendor.deliveryDays} days.
               </p>
-              {rec.rationale && (
+              {(rec.points?.length || rec.rationale) && (
                 <div className="rounded-lg px-3 py-2" style={{ backgroundColor: TEAL.tint }}>
                   <p className="text-[11px] font-semibold" style={{ color: TEAL.dark }}>Why</p>
-                  <p className="text-[11px] mt-0.5 leading-relaxed" style={{ color: TEAL.dark }}>{rec.rationale}</p>
+                  {rec.points?.length ? (
+                    <PointList points={rec.points} className="text-[11px] space-y-1 mt-1" headingColor={TEAL.dark} textColor={TEAL.dark} />
+                  ) : (
+                    <p className="text-[11px] mt-0.5 leading-relaxed" style={{ color: TEAL.dark }}>{rec.rationale}</p>
+                  )}
                 </div>
               )}
             </>

@@ -2,7 +2,17 @@ import React, { useState } from 'react';
 import { Icon } from '@iconify/react';
 import ReactECharts from 'echarts-for-react';
 import { COLORS, SHADOWS } from '../../design-system/tokens';
-import type { CommodityFeed, ContractBenchmark, HistoricalPrice, MarketInputs, OnlinePrice, Sustainability } from '../../data/rfq-recommendation';
+import type {
+  CommodityFeed,
+  ContractBenchmark,
+  HistoricalPrice,
+  MarketInputs,
+  MarketListing,
+  MarketRegionResult,
+  MarketSearch,
+  OnlinePrice,
+  Sustainability,
+} from '../../data/rfq-recommendation';
 
 const TEAL = {
   base: '#0F6B64',
@@ -140,10 +150,60 @@ const HistoricalCard: React.FC<{ data: HistoricalPrice | null }> = ({ data }) =>
           Last paid {formatINR(data.lastPrice)} on {formatDay(data.lastDate)}
           {data.trend3mPct != null && <> · 3-month trend {formatPct(data.trend3mPct)}</>}
         </p>
+        <PriceRange data={data} />
+        <PastSuppliers data={data} />
       </>
     )}
   </Card>
 );
+
+/** Low, average and high (meeting, 16 Oct: "what is the maximum, minimum"): 12 months, else the whole history. */
+const PriceRange: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
+  const recent = data.min12m != null && data.max12m != null;
+  const low = recent ? data.min12m : data.minAll;
+  const high = recent ? data.max12m : data.maxAll;
+  const avg = recent ? data.avg12m : data.avgAll;
+  if (low == null || high == null) return null;
+  return (
+    <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
+      Low <b style={{ color: COLORS.text.primary }}>{formatINR(low)}</b> · Average <b style={{ color: COLORS.text.primary }}>{formatINR(avg)}</b> · High{' '}
+      <b style={{ color: COLORS.text.primary }}>{formatINR(high)}</b>
+      <span style={{ color: COLORS.text.tertiary }}> ({recent ? 'last 12 months' : `all orders since ${formatDay(data.firstDate)}`})</span>
+    </p>
+  );
+};
+
+/** Who we bought it from before ("who are the suppliers in past?"), latest first. */
+const PastSuppliers: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
+  const rows = (data.pastSuppliers ?? []).slice(0, 6);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-1">
+      <p className="text-[11px] font-semibold" style={{ color: COLORS.text.secondary }}>Past suppliers</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px] mt-0.5">
+          <thead>
+            <tr style={{ color: COLORS.text.tertiary }}>
+              {['Supplier', 'Orders', 'Last price', 'Last ordered'].map((h) => (
+                <th key={h} className="text-left font-medium py-1 pr-3 whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.vendorId} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                <td className="py-1 pr-3" style={{ color: COLORS.text.primary }}>{s.vendorName}</td>
+                <td className="py-1 pr-3" style={{ color: COLORS.text.secondary }}>{s.orders}</td>
+                <td className="py-1 pr-3 whitespace-nowrap" style={{ color: COLORS.text.primary }}>{formatINR(s.lastPrice)}</td>
+                <td className="py-1 pr-3 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{formatDay(s.lastDate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
 
 const CommodityCard: React.FC<{ data: CommodityFeed | null }> = ({ data }) => (
   <Card n={2} title={data?.commodity ? `Commodity · ${data.commodity}` : 'Commodity market'}>
@@ -197,8 +257,145 @@ const SourceLinks: React.FC<{ sources?: { title: string; url: string }[]; label?
     </div>
   ) : null;
 
-const OnlineCard: React.FC<{ data: OnlinePrice | null; loading: boolean }> = ({ data, loading }) => (
-  <Card n={3} title="Online market price">
+// ============================================================
+// ③ Online market prices: the India reference price, then each market's
+// listings and suppliers (meeting, 16 Oct: "market price from various sources";
+// "if you are not getting price, at least show… other suppliers")
+// ============================================================
+
+const CURRENCY_SYMBOL: Record<string, string> = { INR: '₹', USD: 'US$', EUR: '€', GBP: '£', CNY: 'CN¥', AUD: 'A$', ZAR: 'R ', IDR: 'Rp ' };
+
+/** A price as listed, in its own currency. */
+const formatMoney = (amount: number, currency: string): string => {
+  const n = amount.toLocaleString(currency === 'INR' ? 'en-IN' : 'en-US', { maximumFractionDigits: amount < 100 ? 2 : 0 });
+  const symbol = CURRENCY_SYMBOL[currency];
+  return symbol ? `${symbol}${n}` : `${currency} ${n}`;
+};
+
+const SPEC_BADGE: Record<MarketListing['meetsSpecs'], { label: string; bg: string; fg: string }> = {
+  yes: { label: 'Meets specs', bg: '#DCFCE7', fg: '#16A34A' },
+  nearly: { label: 'Nearly meets specs', bg: '#FEF3C7', fg: '#B45309' },
+  unknown: { label: 'Specs not stated', bg: COLORS.lightGray, fg: COLORS.text.secondary },
+  no: { label: "Doesn't meet specs", bg: COLORS.lightGray, fg: COLORS.text.tertiary },
+};
+const SPEC_ORDER: Record<MarketListing['meetsSpecs'], number> = { yes: 0, nearly: 1, unknown: 2, no: 3 };
+const LISTINGS_SHOWN = 3;
+
+const MarketRegionBlock: React.FC<{ result: MarketRegionResult }> = ({ result }) => {
+  const [showAll, setShowAll] = useState(false);
+  const listings = [...result.listings].sort((a, b) => SPEC_ORDER[a.meetsSpecs] - SPEC_ORDER[b.meetsSpecs]);
+  const visible = showAll ? listings : listings.slice(0, LISTINGS_SHOWN);
+  return (
+    <div className="pt-2" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-xs font-semibold" style={{ color: COLORS.text.primary }}>{result.region}</span>
+        <span className="text-[10px] whitespace-nowrap" style={{ color: COLORS.text.tertiary }}>
+          {result.failed
+            ? "Couldn't search this market"
+            : `${listings.length} price${listings.length === 1 ? '' : 's'} · ${result.suppliers.length} supplier${result.suppliers.length === 1 ? '' : 's'}`}
+        </span>
+      </div>
+      {visible.length > 0 && (
+        <ul className="mt-1 space-y-1">
+          {visible.map((l, i) => {
+            const badge = SPEC_BADGE[l.meetsSpecs];
+            return (
+              <li key={`${l.url}-${i}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
+                <span className="font-semibold whitespace-nowrap" style={{ color: COLORS.text.primary }}>
+                  {formatMoney(l.price, l.currency)}
+                  <span className="font-normal" style={{ color: COLORS.text.tertiary }}> / {l.unit}</span>
+                </span>
+                <a
+                  href={l.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline truncate"
+                  style={{ color: TEAL.base, maxWidth: '24rem' }}
+                  title={l.title}
+                >
+                  {l.title || hostOf(l.url)}
+                </a>
+                <span style={{ color: COLORS.text.tertiary }}>{l.source || hostOf(l.url)}</span>
+                <span className="px-1.5 rounded-full text-[10px] font-semibold whitespace-nowrap" style={{ backgroundColor: badge.bg, color: badge.fg }}>
+                  {badge.label}
+                </span>
+                {l.outOfRange && <span className="text-[10px]" style={{ color: COLORS.text.tertiary }}>far from the quotes</span>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {listings.length > LISTINGS_SHOWN && (
+        <button type="button" onClick={() => setShowAll((v) => !v)} className="text-[11px] font-medium mt-0.5" style={{ color: TEAL.base }}>
+          {showAll ? 'Show fewer' : `Show ${listings.length - LISTINGS_SHOWN} more`}
+        </button>
+      )}
+      {listings.length === 0 && result.note && (
+        <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>{result.note}</p>
+      )}
+      {result.suppliers.length > 0 && (
+        <p className="text-[11px] mt-1" style={{ color: COLORS.text.secondary }}>
+          <span style={{ color: COLORS.text.tertiary }}>{listings.length ? 'Suppliers: ' : 'No published price. Suppliers you can contact: '}</span>
+          {result.suppliers.map((s, i) => (
+            <React.Fragment key={`${s.name}-${i}`}>
+              {i > 0 && ', '}
+              {s.website ? (
+                <a href={s.website} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: TEAL.base }}>
+                  {s.name}
+                </a>
+              ) : (
+                s.name
+              )}
+            </React.Fragment>
+          ))}
+        </p>
+      )}
+    </div>
+  );
+};
+
+/** Each market's listings and suppliers, below the India reference price. */
+const MarketsSection: React.FC<{ market: MarketSearch | null; loading: boolean }> = ({ market, loading }) => {
+  if (!loading && (!market || market.pending)) return null;
+  const international = market?.regions.some((r) => r.listings.some((l) => l.currency !== 'INR')) ?? false;
+  return (
+    <div className="mt-2 pt-2 space-y-2" style={{ borderTop: `1px solid ${TEAL.border}` }}>
+      <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>By market</p>
+      {loading ? (
+        <>
+          <Skeleton lines={3} />
+          <p className="text-[11px] flex items-center gap-1" style={{ color: COLORS.text.tertiary }}>
+            <Icon icon="mdi:earth" className="w-3.5 h-3.5" /> Searching each market for prices and suppliers, about a minute…
+          </p>
+        </>
+      ) : market && market.regions.length > 0 ? (
+        <>
+          {market.regions.map((r) => (
+            <MarketRegionBlock key={r.region} result={r} />
+          ))}
+          {international && (
+            <p className="text-[10px]" style={{ color: COLORS.text.tertiary }}>
+              International prices are shown as listed, in their own currency, before freight and import duty.
+            </p>
+          )}
+        </>
+      ) : (
+        <Unavailable text={market?.summary ?? 'No market listings found.'} />
+      )}
+    </div>
+  );
+};
+
+const OnlineCard: React.FC<{ data: OnlinePrice | null; loading: boolean; market: MarketSearch | null; marketLoading: boolean }> = ({
+  data,
+  loading,
+  market,
+  marketLoading,
+}) => (
+  <Card n={3} title="Online market prices" hint="Prices found online for this item today, and who sells it in each market.">
+    {data && !loading && !data.pending && (
+      <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.tertiary }}>Reference price · India</p>
+    )}
     {loading || !data || data.pending ? (
       <>
         <Skeleton lines={2} />
@@ -250,6 +447,7 @@ const OnlineCard: React.FC<{ data: OnlinePrice | null; loading: boolean }> = ({ 
         </p>
       </>
     )}
+    <MarketsSection market={market} loading={marketLoading} />
   </Card>
 );
 
@@ -371,10 +569,13 @@ export const MarketStudyPanel: React.FC<{
   market: MarketInputs | null;
   online: OnlinePrice | null;
   onlineLoading: boolean;
+  /** Prices and suppliers per market (shown in card ③). */
+  marketSearch: MarketSearch | null;
+  marketSearchLoading: boolean;
   error: string | null;
   /** Quotes still in the running (Not accepted left out). */
   quotes: QuoteRef[];
-}> = ({ market, online, onlineLoading, error, quotes }) => {
+}> = ({ market, online, onlineLoading, marketSearch, marketSearchLoading, error, quotes }) => {
   // Collapsed at first: the recommendation below is what the buyer reads first.
   const [expanded, setExpanded] = useState(false);
   const vendorIds = quotes.map((q) => q.vendorId);
@@ -392,7 +593,7 @@ export const MarketStudyPanel: React.FC<{
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
             {expanded
               ? 'The five inputs the recommendation weighs besides the quotes. Hover a chart for values.'
-              : `Our past prices, commodity trend, online price, sustainability and rate contract.${onlineLoading ? ' Searching the web for a price…' : ''}`}
+              : `Our past prices, commodity trend, online market prices, sustainability and rate contract.${onlineLoading || marketSearchLoading ? ' Searching the web for prices…' : ''}`}
           </p>
         </div>
         <span className="inline-flex items-center gap-1 text-[11px] font-medium flex-shrink-0" style={{ color: TEAL.base }}>
@@ -408,7 +609,7 @@ export const MarketStudyPanel: React.FC<{
           <div className="flex flex-col gap-3 p-4">
             <HistoricalCard data={market?.historical ?? null} />
             <CommodityCard data={market?.commodity ?? null} />
-            <OnlineCard data={online ?? market?.online ?? null} loading={onlineLoading} />
+            <OnlineCard data={online ?? market?.online ?? null} loading={onlineLoading} market={marketSearch} marketLoading={marketSearchLoading} />
             <SustainabilityCard data={market?.sustainability ?? null} vendorIds={vendorIds} />
             <ContractCard data={market?.contract ?? null} quotes={quotes} unit={market?.historical?.unit} />
           </div>

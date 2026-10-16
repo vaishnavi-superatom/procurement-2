@@ -1,5 +1,5 @@
 /**
- * AI Recommendation for an RFQ in negotiation (TODO.md §3), as direct
+ * System Recommendation for an RFQ in negotiation (TODO.md §3), as direct
  * tools. The MainAgent can call them from chat, and the screens call them
  * through the tool executor like any other tool.
  *
@@ -19,6 +19,7 @@
  *     id serial PRIMARY KEY, rfq_id text NOT NULL,
  *     recommended_vendor_id text, recommended_quote_id text, combined_rank text, rationale text,
  *     considerations jsonb NOT NULL DEFAULT '[]', source text NOT NULL, model text,
+ *     points jsonb NOT NULL DEFAULT '[]',  -- added 16 Oct: the four headed points shown on screen
  *     ranking jsonb NOT NULL, market jsonb NOT NULL, created_by text,
  *     created_at timestamptz NOT NULL DEFAULT now()
  *   );
@@ -46,6 +47,8 @@ const TECH_WEIGHT = 0.4;
 const T_SCORE: Record<string, number> = { T1: 1, T2: 0.75, T3: 0.5, T4: 0.25 };
 
 const SEARCH_TIMEOUT_MS = 90_000;
+// Per model attempt in the market search, so a market with one fallback stays near 90 s.
+const MARKET_SEARCH_TIMEOUT_MS = 45_000;
 const RECOMMEND_TIMEOUT_MS = 45_000;
 
 const RFQ_ID = /^[A-Za-z0-9_-]{1,50}$/;
@@ -219,11 +222,17 @@ async function loadRfqFacts(run: Run, rfqId: string): Promise<{ rfq: RfqFacts; v
 /** ① What we have paid for this material before the RFQ. */
 async function historicalPrice(run: Run, rfq: RfqFacts) {
 	const rows = await run(`
-		SELECT po_date::text AS po_date, unit_price
-		FROM purchase_orders
-		WHERE material_id = @materialId AND po_date < CAST(@rfqDate AS date)
-		ORDER BY po_date`, { materialId: rfq.materialId, rfqDate: rfq.rfqDate });
-	const orders = rows.map((r: any) => ({ date: r.po_date as string, price: Number(r.unit_price) }));
+		SELECT po.po_date::text AS po_date, po.unit_price, po.vendor_id, v.vendor_name
+		FROM purchase_orders po
+		LEFT JOIN vendor_master v ON v.vendor_id = po.vendor_id
+		WHERE po.material_id = @materialId AND po.po_date < CAST(@rfqDate AS date)
+		ORDER BY po.po_date`, { materialId: rfq.materialId, rfqDate: rfq.rfqDate });
+	const orders = rows.map((r: any) => ({
+		date: r.po_date as string,
+		price: Number(r.unit_price),
+		vendorId: r.vendor_id as string,
+		vendorName: (r.vendor_name as string | null) ?? r.vendor_id,
+	}));
 	const rfqTime = Date.parse(rfq.rfqDate);
 	const daysBefore = (d: string) => (rfqTime - Date.parse(d)) / 86_400_000;
 	const last12 = orders.filter(o => daysBefore(o.date) <= 365);
@@ -236,6 +245,22 @@ async function historicalPrice(run: Run, rfq: RfqFacts) {
 		const k = o.date.slice(0, 7);
 		byMonth.set(k, [...(byMonth.get(k) ?? []), o.price]);
 	}
+	// Who we bought it from (meeting, 16 Oct: "who are the suppliers in past?"): latest supplier first.
+	const bySupplier = new Map<string, { vendorId: string; vendorName: string; orders: number; lastPrice: number; lastDate: string; minPrice: number; maxPrice: number }>();
+	for (const o of orders) { // oldest first, so the last write per supplier is its latest order
+		const s = bySupplier.get(o.vendorId);
+		bySupplier.set(o.vendorId, {
+			vendorId: o.vendorId,
+			vendorName: o.vendorName,
+			orders: (s?.orders ?? 0) + 1,
+			lastPrice: round(o.price),
+			lastDate: o.date,
+			minPrice: round(Math.min(s?.minPrice ?? o.price, o.price)),
+			maxPrice: round(Math.max(s?.maxPrice ?? o.price, o.price)),
+		});
+	}
+	const pastSuppliers = [...bySupplier.values()].sort((a, b) => b.lastDate.localeCompare(a.lastDate)).slice(0, 8);
+
 	const last = orders[orders.length - 1];
 	const avg12m = avg(last12);
 	return {
@@ -246,6 +271,12 @@ async function historicalPrice(run: Run, rfq: RfqFacts) {
 		avg12m: avg12m !== null ? round(avg12m) : null,
 		min12m: last12.length ? round(Math.min(...last12.map(o => o.price))) : null,
 		max12m: last12.length ? round(Math.max(...last12.map(o => o.price))) : null,
+		// The whole history, for materials with no order in the last 12 months.
+		minAll: orders.length ? round(Math.min(...orders.map(o => o.price))) : null,
+		maxAll: orders.length ? round(Math.max(...orders.map(o => o.price))) : null,
+		avgAll: orders.length ? round(avg(orders)!) : null,
+		firstDate: orders[0]?.date ?? null,
+		pastSuppliers,
 		orders12m: last12.length,
 		totalOrders: orders.length,
 		trend3mPct: recent !== null && prior !== null ? pct(recent, prior) : null,
@@ -355,26 +386,32 @@ async function candidateModels(rfq: RfqFacts, specs: string): Promise<{ models: 
 	}
 }
 
+/** The PR specs that decide the grade (mandatory or exact-match), for search queries and spec checks. */
+function keySpecs(requirements: any[]): string {
+	return requirements
+		.filter((r: any) => r.is_mandatory || r.comparison === 'exact')
+		.slice(0, 4)
+		.map((r: any) => `${r.parameter} ${r.required_value}`)
+		.join('; ');
+}
+
 /** ③ Current market price found on the web, cached per material per day. */
 async function onlineReferencePrice(run: Run, rfq: RfqFacts, requirements: any[], opts: { refresh?: boolean; cachedOnly?: boolean } = {}) {
 	if (rfq.materialGroup === 'Services') {
 		return { available: false, summary: 'No public market price for services.' };
 	}
 	if (!opts.refresh) {
+		// The market search's daily row shares this table; skip it.
 		const [hit] = await run(`
 			SELECT result, model, created_at FROM market_reference_prices
-			WHERE material_id = @materialId AND fetched_on = CURRENT_DATE
-			ORDER BY created_at DESC LIMIT 1`, { materialId: rfq.materialId });
+			WHERE material_id = @materialId AND fetched_on = CURRENT_DATE AND query <> @marketKey
+			ORDER BY created_at DESC LIMIT 1`, { materialId: rfq.materialId, marketKey: MARKET_SEARCH_KEY });
 		if (hit) return { ...hit.result, model: hit.model, fetchedAt: hit.created_at, cached: true };
 	}
 	if (opts.cachedOnly) return { available: false, pending: true, summary: 'Not fetched yet today.' };
 
 	// Search for the right grade: the key specs from the PR go into the query.
-	const specs = requirements
-		.filter((r: any) => r.is_mandatory || r.comparison === 'exact')
-		.slice(0, 4)
-		.map((r: any) => `${r.parameter} ${r.required_value}`)
-		.join('; ');
+	const specs = keySpecs(requirements);
 	let query = `${rfq.materialSubgroup} (${rfq.materialDesc})${specs ? `, specs: ${specs}` : ''}. Price per ${rfq.unit} in INR, India.`;
 
 	try {
@@ -456,6 +493,156 @@ function checkOnlineAgainstQuotes(online: any, vendors: VendorQuote[]) {
 		note: `About ${ratio < 1 ? round(1 / ratio, 1) + '× below' : round(ratio, 1) + '× above'} the quoted prices: either a different specification or basis, `
 			+ 'or the quotes need checking. Shown for context, not compared.',
 	};
+}
+
+// ============================================================
+// Market search by region (meeting, 16 Oct): prices from several sources and,
+// where no price is published, the suppliers in each market. Same web search
+// as the online price; a search API restricted to these sites can replace
+// `searchRegion` later without changing the rest.
+// ============================================================
+
+/** Key of the market search's daily row in market_reference_prices (online price rows hold their search text). */
+const MARKET_SEARCH_KEY = 'market-search';
+
+interface MarketRegion {
+	region: string;
+	sites: string[];
+}
+
+// Different products need different sources (meeting: "for engineering products
+// one thing; coal and all you want different thing altogether").
+const MARKET_PROFILES: Record<'engineering' | 'rawMaterials' | 'packaging', MarketRegion[]> = {
+	engineering: [
+		{ region: 'India', sites: ['indiamart.com', 'tradeindia.com', 'moglix.com', 'industrybuying.com', 'amazon.in'] },
+		{ region: 'China', sites: ['alibaba.com', 'globalsources.com', 'made-in-china.com'] },
+		{ region: 'Europe', sites: ['directindustry.com', 'europages.com'] },
+		{ region: 'United States', sites: ['globalspec.com', 'thomasnet.com', 'grainger.com'] },
+	],
+	rawMaterials: [
+		{ region: 'India', sites: ['indiamart.com', 'tradeindia.com', 'coalindia.in'] },
+		{ region: 'Indonesia', sites: ['alibaba.com', 'tradewheel.com'] },
+		{ region: 'Australia', sites: ['tradingeconomics.com', 'alibaba.com'] },
+		{ region: 'South Africa', sites: ['tradingeconomics.com', 'alibaba.com'] },
+	],
+	packaging: [
+		{ region: 'India', sites: ['indiamart.com', 'tradeindia.com'] },
+		{ region: 'China', sites: ['alibaba.com', 'made-in-china.com'] },
+		{ region: 'Europe', sites: ['europages.com'] },
+	],
+};
+
+function marketProfileOf(rfq: RfqFacts): { name: string; regions: MarketRegion[] } | null {
+	if (rfq.materialGroup === 'Services') return null;
+	if (rfq.materialGroup === 'Raw Materials') return { name: 'raw materials', regions: MARKET_PROFILES.rawMaterials };
+	if (rfq.materialGroup === 'Packaging') return { name: 'packaging', regions: MARKET_PROFILES.packaging };
+	return { name: 'engineering', regions: MARKET_PROFILES.engineering };
+}
+
+const marketSearchPrompt = (region: string, sites: string[], specs: string) =>
+	`You research one product's market in ${region} for an industrial buyer in India, using the web search results provided. `
+	+ 'Respond with JSON only: {"listings": [{"source": string, "title": string, "price": number or null, "currency": string, "unit": string, '
+	+ '"meets_specs": "yes" | "nearly" | "no" | "unknown", "url": string}], "suppliers": [{"name": string, "country": string, "website": string or null}], '
+	+ '"note": string or null}. '
+	+ `"listings": up to 5 offers from ${region} that state a price; copy the price and currency exactly as listed (do not convert); `
+	+ '"source" is the site name, "unit" just the unit (e.g. "piece", "MT"), and "meets_specs" compares the listing\'s stated specs with the buyer\'s. '
+	+ `"suppliers": up to 6 manufacturers or distributors that sell this product in ${region}, whether or not they show a price. `
+	+ `Prefer these sites: ${sites.join(', ')}. `
+	+ (specs ? `The buyer's required specs: ${specs}. ` : '')
+	+ 'Never invent prices, names or URLs; use empty lists when the results show none. "note": one short plain sentence on what the results show, or null.';
+
+const CURRENCY_ALIASES: Record<string, string> = {
+	'₹': 'INR', RS: 'INR', 'RS.': 'INR', INR: 'INR',
+	'$': 'USD', 'US$': 'USD', USD: 'USD',
+	'€': 'EUR', EUR: 'EUR',
+	'¥': 'CNY', RMB: 'CNY', CNY: 'CNY',
+	'£': 'GBP', GBP: 'GBP',
+	'A$': 'AUD', AUD: 'AUD',
+	ZAR: 'ZAR', IDR: 'IDR',
+};
+const currencyOf = (raw: unknown): string => {
+	const c = String(raw ?? '').trim().toUpperCase();
+	return CURRENCY_ALIASES[c] ?? (/^[A-Z]{3}$/.test(c) ? c : c || 'unknown');
+};
+const isUrl = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/\S+$/.test(u);
+
+/** One market: priced listings (as listed, in their own currency) and suppliers. */
+async function searchRegion(rfq: RfqFacts, specs: string, region: MarketRegion, medianQuote: number | null) {
+	const query = `${rfq.materialDesc} (${rfq.materialSubgroup}) price and suppliers in ${region.region}`;
+	try {
+		const { data } = await askJson(
+			`market search ${region.region}`,
+			{ sys: marketSearchPrompt(region.region, region.sites, specs), user: query },
+			[MARKET_SEARCH_MODEL, FALLBACK_MODEL + ':online'],
+			2500,
+			MARKET_SEARCH_TIMEOUT_MS,
+		);
+		const listings = (Array.isArray(data.listings) ? data.listings : [])
+			.map((l: any) => ({
+				source: String(l?.source ?? '').slice(0, 80),
+				title: String(l?.title ?? '').slice(0, 200),
+				price: num(l?.price),
+				currency: currencyOf(l?.currency),
+				unit: typeof l?.unit === 'string' && l.unit.trim() ? l.unit.trim().slice(0, 30) : rfq.unit,
+				meetsSpecs: ['yes', 'nearly', 'no', 'unknown'].includes(l?.meets_specs) ? l.meets_specs : 'unknown',
+				url: l?.url,
+			}))
+			.filter((l: any) => l.price !== null && l.price > 0 && isUrl(l.url))
+			.slice(0, 5)
+			.map((l: any) => {
+				// Only INR listings can be set against the quotes; far away usually means another spec or basis.
+				const ratio = l.currency === 'INR' && medianQuote ? l.price / medianQuote : null;
+				return { ...l, price: round(l.price), outOfRange: ratio !== null && (ratio < 1 / 3 || ratio > 3) };
+			});
+		const suppliers = (Array.isArray(data.suppliers) ? data.suppliers : [])
+			.filter((s: any) => typeof s?.name === 'string' && s.name.trim())
+			.slice(0, 6)
+			.map((s: any) => ({
+				name: s.name.trim().slice(0, 120),
+				country: typeof s.country === 'string' && s.country.trim() ? s.country.trim().slice(0, 60) : region.region,
+				website: isUrl(s.website) ? s.website : null,
+			}));
+		const note = typeof data.note === 'string' && data.note.trim() ? clipToSentence(data.note.trim(), 240) : null;
+		return { region: region.region, sites: region.sites, listings, suppliers, note };
+	} catch (e) {
+		console.warn(`[RFQ-RECOMMENDATION] market search ${region.region} failed for ${rfq.materialId}: ${errMsg(e)}`);
+		return { region: region.region, sites: region.sites, listings: [], suppliers: [], note: null, failed: true };
+	}
+}
+
+/** Listings and suppliers per market for the RFQ's material, cached per material per day. */
+async function marketSearch(run: Run, rfq: RfqFacts, vendors: VendorQuote[], requirements: any[], opts: { refresh?: boolean; cachedOnly?: boolean } = {}) {
+	const profile = marketProfileOf(rfq);
+	if (!profile) return { available: false, profile: null, regions: [], summary: 'No market listings for services.' };
+	if (!opts.refresh) {
+		const [hit] = await run(`
+			SELECT result, created_at FROM market_reference_prices
+			WHERE material_id = @materialId AND fetched_on = CURRENT_DATE AND query = @key
+			ORDER BY created_at DESC LIMIT 1`, { materialId: rfq.materialId, key: MARKET_SEARCH_KEY });
+		if (hit) return { ...hit.result, fetchedAt: hit.created_at, cached: true };
+	}
+	if (opts.cachedOnly) return { available: false, pending: true, profile: profile.name, regions: [], summary: 'Not searched yet today.' };
+
+	const prices = vendors.filter(v => v.eligible).map(v => v.quotedPrice).sort((a, b) => a - b);
+	const medianQuote = prices.length ? prices[Math.floor(prices.length / 2)] : null;
+	const started = Date.now();
+	const regions = await Promise.all(profile.regions.map(r => searchRegion(rfq, keySpecs(requirements), r, medianQuote)));
+	const priced = regions.filter(r => r.listings.length).length;
+	const result = {
+		available: regions.some(r => r.listings.length || r.suppliers.length),
+		profile: profile.name,
+		regions,
+		summary: `Prices found in ${priced} of ${regions.length} markets; suppliers listed for ${regions.filter(r => r.suppliers.length).length}.`,
+	};
+	const failed = regions.filter(r => 'failed' in r).length;
+	console.log(`[RFQ-RECOMMENDATION] ${rfq.materialId}: market search (${profile.name}) ${result.summary}${failed ? ` ${failed} failed.` : ''} ${Date.now() - started} ms`);
+	if (failed < regions.length) { // a total failure isn't cached, so the next call tries again
+		await run(`
+			INSERT INTO market_reference_prices (material_id, query, result, model)
+			VALUES (@materialId, @key, CAST(@result AS jsonb), @model)`,
+			{ materialId: rfq.materialId, key: MARKET_SEARCH_KEY, result: JSON.stringify(result), model: MARKET_SEARCH_MODEL });
+	}
+	return { ...result, fetchedAt: new Date().toISOString(), cached: false };
 }
 
 /** ④ Sustainability of the vendors that quoted. */
@@ -551,17 +738,71 @@ function rankVendors(vendors: VendorQuote[], market: any): RankedVendor[] {
 // Step 4 — recommendation
 // ============================================================
 
+// Shown as four short points with side headings (meeting, 16 Oct: "4 to 5
+// bullet points… side headings, like pricing… risk"; "clean point, direct speech").
+interface Point {
+	heading: string;
+	text: string;
+}
+const POINT_HEADINGS = ['Pricing', 'Technical', 'Delivery', 'Risk'] as const;
+
+/**
+ * The four points from our data alone: used when the model's points are
+ * missing or unusable, and for recommendations saved before points existed.
+ */
+function factPoints(pick: RankedVendor, ranking: RankedVendor[], unit: string): Point[] {
+	const n = ranking.length;
+	const vs = (p: number | null | undefined, what: string) => (p === null || p === undefined ? null : `${Math.abs(p)}% ${p <= 0 ? 'below' : 'above'} ${what}`);
+	const pricing = [
+		`${inr(pick.quotedPrice)} per ${unit}, ${pick.lRank} of ${n} quote${n === 1 ? '' : 's'}`,
+		vs(pick.vsHistoricalAvgPct, 'our 12-month average'),
+		vs(pick.vsContractPct, 'our rate contract'),
+	].filter(Boolean).join('; ');
+	const fastest = ranking.filter(v => v.deliveryDays != null).sort((a, b) => a.deliveryDays! - b.deliveryDays!)[0];
+	const delivery = pick.deliveryDays == null
+		? 'Delivery time not stated'
+		: fastest && fastest.vendorId !== pick.vendorId && fastest.deliveryDays! < pick.deliveryDays
+			? `${pick.deliveryDays} days; the fastest quote is ${fastest.deliveryDays} days (${fastest.vendorName})`
+			: `${pick.deliveryDays} days, the fastest quote`;
+	const risk = [
+		pick.overallRisk ? `${pick.overallRisk} risk` : 'Risk not rated',
+		pick.otdPct != null ? `${Math.round(pick.otdPct)}% on-time delivery` : null,
+		pick.ecovadisScore != null ? `EcoVadis ${pick.ecovadisScore}` : null,
+	].filter(Boolean).join(', ');
+	const technical = `${pick.tRank}${pick.technicalNote ? `: ${clipToSentence(pick.technicalNote, 140)}` : ''}`;
+	const end = (s: string) => (/[.!?]$/.test(s) ? s : `${s}.`);
+	return [
+		{ heading: 'Pricing', text: end(pricing) },
+		{ heading: 'Technical', text: end(technical) },
+		{ heading: 'Delivery', text: end(delivery) },
+		{ heading: 'Risk', text: end(risk) },
+	];
+}
+
+/** The model's points, if it gave exactly one per heading; otherwise null. */
+function cleanPoints(raw: unknown): Point[] | null {
+	if (!Array.isArray(raw)) return null;
+	const byHeading = new Map<string, string>();
+	for (const p of raw) {
+		const heading = typeof p?.heading === 'string' ? p.heading.trim().toLowerCase() : '';
+		const text = typeof p?.text === 'string' ? p.text.trim() : '';
+		const h = POINT_HEADINGS.find(x => x.toLowerCase() === heading);
+		if (h && text && !byHeading.has(h)) byHeading.set(h, clipToSentence(text, 220));
+	}
+	return byHeading.size === POINT_HEADINGS.length ? POINT_HEADINGS.map(h => ({ heading: h, text: byHeading.get(h)! })) : null;
+}
+
 async function recommend(rfq: RfqFacts, ranking: RankedVendor[], market: any) {
 	const candidates = ranking.filter(v => !v.sanctionsFlag);
 	if (!candidates.length) {
-		return { vendorId: null, vendorName: null, quoteId: null, combinedRank: null, rationale: 'No technically acceptable vendor without a sanctions flag.', considerations: [] as string[], source: 'none', model: null as string | null, agreesWithScore: null as boolean | null };
+		return { vendorId: null, vendorName: null, quoteId: null, combinedRank: null, rationale: 'No technically acceptable vendor without a sanctions flag.', considerations: [] as string[], points: [] as Point[], source: 'none', model: null as string | null, agreesWithScore: null as boolean | null };
 	}
 	const top = candidates[0];
 	const fallback = (why: string) => ({
 		vendorId: top.vendorId, vendorName: top.vendorName, quoteId: top.quoteId, combinedRank: `${top.lRank}, ${top.tRank}`,
 		rationale: `${top.vendorName} has the best combined score (${top.lRank}, ${top.tRank}) under the ${PRICE_WEIGHT * 100}/${TECH_WEIGHT * 100} price/technical weighting`
 			+ (top.vsHistoricalAvgPct !== null ? `, and its price is ${Math.abs(top.vsHistoricalAvgPct)}% ${top.vsHistoricalAvgPct <= 0 ? 'below' : 'above'} our 12-month average.` : '.'),
-		considerations: [] as string[], source: 'fallback', model: null as string | null, agreesWithScore: true as boolean | null, fallbackReason: why,
+		considerations: [] as string[], points: factPoints(top, ranking, rfq.unit), source: 'fallback', model: null as string | null, agreesWithScore: true as boolean | null, fallbackReason: why,
 	});
 
 	const facts = {
@@ -600,21 +841,31 @@ async function recommend(rfq: RfqFacts, ranking: RankedVendor[], market: any) {
 				+ 'the market benchmarks (our past prices, the commodity trend, the online price, our rate-contract price) and sustainability (EcoVadis). '
 				+ 'Do not compute your own score; quote the given one. Round prices to whole rupees. '
 				+ 'The online reference price may be on a different basis (e.g. mine-head, excluding freight and taxes); compare quotes to it only when comparable_to_quotes is true. '
-				+ 'Respond with JSON only: {"vendor_id": string, "rationale": string (at most 2 plain sentences, cite the key numbers), '
-				+ '"considerations": [up to 3 short strings, e.g. trade-offs or risks to check]}.',
+				+ 'Respond with JSON only: {"vendor_id": string, "summary": string, "points": [{"heading": "Pricing", "text": string}, '
+				+ '{"heading": "Technical", "text": string}, {"heading": "Delivery", "text": string}, {"heading": "Risk", "text": string}]}. '
+				+ '"points": exactly these four headings in this order; each text is one short plain sentence (at most 20 words) about the '
+				+ 'recommended vendor with the key numbers; mention another vendor only when it explains the choice (e.g. a faster or cheaper one). '
+				+ 'Pricing covers the price against the other quotes, our past prices and the rate contract; Technical covers the T-rank and specs; '
+				+ 'Delivery covers delivery time against the urgency; Risk covers risk rating, on-time delivery and sustainability. '
+				+ '"summary": one sentence (at most 25 words) on why this supplier. '
+				+ 'Write in plain, direct business language: no filler, no hedging, no first person, no words like "superior" or "significant".',
 			user: JSON.stringify(facts),
 		}, [RECOMMENDATION_MODEL, FALLBACK_MODEL], 1500, RECOMMEND_TIMEOUT_MS);
 
 		const pickVendor = candidates.find(v => v.vendorId === data.vendor_id);
-		const rationale = typeof data.rationale === 'string' ? data.rationale.trim() : '';
 		if (!pickVendor) return fallback(`model picked an ineligible vendor (${data.vendor_id})`);
-		if (!rationale) return fallback('model gave no rationale');
+		// Points the model didn't get right are built from our data instead, so the screen always has four.
+		const points = cleanPoints(data.points) ?? factPoints(pickVendor, ranking, rfq.unit);
+		const summary = typeof data.summary === 'string' && data.summary.trim()
+			? data.summary.trim()
+			: typeof data.rationale === 'string' && data.rationale.trim() ? data.rationale.trim() : '';
 		return {
 			vendorId: pickVendor.vendorId, vendorName: pickVendor.vendorName, quoteId: pickVendor.quoteId,
 			// Ranks come from our data, never from the model's text.
 			combinedRank: `${pickVendor.lRank}, ${pickVendor.tRank}`,
-			rationale: rationale.slice(0, 600),
-			considerations: (Array.isArray(data.considerations) ? data.considerations : []).filter((c: unknown) => typeof c === 'string').slice(0, 3) as string[],
+			rationale: clipToSentence(summary || points.map(p => p.text).join(' '), 400),
+			considerations: [] as string[],
+			points,
 			source: 'ai', model: model as string | null, agreesWithScore: (pickVendor.vendorId === top.vendorId) as boolean | null,
 		};
 	} catch (e) {
@@ -634,7 +885,7 @@ async function runRecommendation(run: Run, rfqId: string, opts: { refresh?: bool
 	if (!opts.refresh) {
 		const [saved] = await run(`
 			SELECT rr.id, rr.recommended_vendor_id, rr.recommended_quote_id, rr.combined_rank, rr.rationale, rr.considerations,
-			       rr.source, rr.model, rr.ranking, rr.market, rr.created_at
+			       rr.points, rr.source, rr.model, rr.ranking, rr.market, rr.created_at
 			FROM rfq_recommendations rr
 			WHERE rr.rfq_id = @rfqId AND rr.created_at::date = CURRENT_DATE
 			  AND rr.created_at > COALESCE((SELECT max(ranked_at) FROM rfq_technical_evaluations WHERE rfq_id = @rfqId), '-infinity')
@@ -642,15 +893,21 @@ async function runRecommendation(run: Run, rfqId: string, opts: { refresh?: bool
 		if (saved) {
 			const ranking: RankedVendor[] = saved.ranking ?? [];
 			const { rfq } = await loadRfqFacts(run, rfqId);
+			const pick = ranking.find(v => v.vendorId === saved.recommended_vendor_id);
+			// Saved before points existed: build them from the saved ranking.
+			const points: Point[] = Array.isArray(saved.points) && saved.points.length === POINT_HEADINGS.length
+				? saved.points
+				: pick ? factPoints(pick, ranking, rfq.unit) : [];
 			return {
 				id: saved.id, createdAt: saved.created_at, rfq, market: saved.market, ranking, reused: true,
 				recommendation: {
 					vendorId: saved.recommended_vendor_id,
-					vendorName: ranking.find(v => v.vendorId === saved.recommended_vendor_id)?.vendorName ?? null,
+					vendorName: pick?.vendorName ?? null,
 					quoteId: saved.recommended_quote_id,
 					combinedRank: saved.combined_rank,
 					rationale: saved.rationale,
 					considerations: saved.considerations ?? [],
+					points,
 					source: saved.source,
 					model: saved.model,
 					agreesWithScore: ranking.find(v => !v.sanctionsFlag)?.vendorId === saved.recommended_vendor_id,
@@ -666,12 +923,13 @@ async function runRecommendation(run: Run, rfqId: string, opts: { refresh?: bool
 
 	const [saved] = await run(`
 		INSERT INTO rfq_recommendations (rfq_id, recommended_vendor_id, recommended_quote_id, combined_rank, rationale,
-		                                 considerations, source, model, ranking, market, created_by)
-		VALUES (@rfqId, @vendorId, @quoteId, @combinedRank, @rationale, CAST(@considerations AS jsonb), @source, @model,
+		                                 considerations, points, source, model, ranking, market, created_by)
+		VALUES (@rfqId, @vendorId, @quoteId, @combinedRank, @rationale, CAST(@considerations AS jsonb), CAST(@points AS jsonb), @source, @model,
 		        CAST(@ranking AS jsonb), CAST(@market AS jsonb), @createdBy)
 		RETURNING id, created_at`, {
 		rfqId, vendorId: recommendation.vendorId, quoteId: recommendation.quoteId, combinedRank: recommendation.combinedRank,
-		rationale: recommendation.rationale, considerations: JSON.stringify(recommendation.considerations), source: recommendation.source,
+		rationale: recommendation.rationale, considerations: JSON.stringify(recommendation.considerations), points: JSON.stringify(recommendation.points),
+		source: recommendation.source,
 		model: recommendation.model, ranking: JSON.stringify(ranking), market: JSON.stringify(market), createdBy: opts.userId ?? null,
 	});
 	console.log(`[RFQ-RECOMMENDATION] ${rfqId}: ${recommendation.vendorName ?? 'none'} (${recommendation.combinedRank ?? '-'}) via ${recommendation.source} in ${Date.now() - started} ms`);
@@ -785,6 +1043,8 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 						combinedRank: rec.combinedRank,
 						rationale: rec.rationale,
 						considerations: rec.considerations,
+						// The reason as four headed points: Pricing, Technical, Delivery, Risk.
+						points: rec.points,
 						recommendationSource: rec.source,
 						model: rec.model,
 						agreesWithScore: rec.agreesWithScore,
@@ -889,6 +1149,50 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 					{ name: 'unit', type: 'string', description: 'Price unit, e.g. MT' },
 					{ name: 'basis', type: 'string', description: 'What the price is, e.g. mine-head, ex-works, delivered' },
 					{ name: 'comparable', type: 'boolean', description: 'Whether it can be compared with delivered supplier quotes' },
+				],
+			},
+		},
+		{
+			id: 'get-rfq-market-search',
+			name: 'Get RFQ Market Prices by Region',
+			toolType: 'direct',
+			// Writes the daily cache row; a forced refresh must really search again.
+			cache: false,
+			description:
+				'Prices and suppliers for an RFQ\'s material in several markets, from web listings: engineering items in India, China, ' +
+				'Europe and the United States; raw materials in India, Indonesia, Australia and South Africa. Each listing has its source, ' +
+				'price as listed (in its own currency), unit and link; each market also lists suppliers. Searches the web (about 30–60 ' +
+				'seconds); cached per material for the day. ' +
+				'USE FOR: "who else sells this", "what does this cost in China / Europe / the US", international price comparison for an RFQ. ' +
+				'DO NOT USE FOR: our own past prices (use get-rfq-market-study) or the single India reference price (use get-rfq-online-price).',
+			params: {
+				rfqId: 'string - the RFQ id, e.g. "RFQ-00015"',
+				refresh: 'boolean (optional) - true to search again even if today\'s results are cached',
+			},
+			fn: async (input: { rfqId?: string; refresh?: boolean }) => {
+				const rfqId = requireRfqId(input);
+				if (!rfqId) return { error: 'A valid rfqId is required, e.g. "RFQ-00015".' };
+				try {
+					const { rfq, vendors, requirements } = await loadRfqFacts(run, rfqId);
+					const market: any = await marketSearch(run, rfq, vendors, requirements, { refresh: input.refresh === true });
+					const rows = (market.regions ?? []).flatMap((r: any) => r.listings.map((l: any) => ({
+						region: r.region, source: l.source, title: l.title, price: l.price, currency: l.currency, unit: l.unit, meetsSpecs: l.meetsSpecs, url: l.url,
+					})));
+					return { ...market, data: rows, count: rows.length, rfqId, material: rfq.materialDesc, unit: rfq.unit };
+				} catch (e) {
+					return { error: errMsg(e) };
+				}
+			},
+			outputSchema: {
+				description: 'Priced listings per market for the RFQ\'s material (own currency, before freight and duty), plus suppliers per market.',
+				fields: [
+					{ name: 'region', type: 'string', description: 'Market, e.g. India, China, Europe' },
+					{ name: 'source', type: 'string', description: 'Site the listing is on' },
+					{ name: 'title', type: 'string', description: 'Listing title' },
+					{ name: 'price', type: 'number', description: 'Price as listed (KPI)' },
+					{ name: 'currency', type: 'string', description: 'Currency of the price, e.g. INR, USD, EUR' },
+					{ name: 'unit', type: 'string', description: 'Price unit' },
+					{ name: 'meetsSpecs', type: 'string', description: 'Whether the listing\'s stated specs meet the PR: yes / nearly / no / unknown' },
 				],
 			},
 		},

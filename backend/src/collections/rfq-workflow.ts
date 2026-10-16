@@ -101,7 +101,7 @@ export async function registerRfqWorkflowCollections({ sdk }: CollectionContext)
 		const [rec] = await queryProcurement('rfq-select-recommendation', `
 			SELECT id, recommended_vendor_id FROM rfq_recommendations WHERE rfq_id = @rfqId ORDER BY created_at DESC LIMIT 1`,
 			{ rfqId });
-		if (!rec) throw new Error('Run the AI Recommendation before selecting a supplier');
+		if (!rec) throw new Error('Run the System Recommendation before selecting a supplier');
 		const isDeviation = rec.recommended_vendor_id !== vendorId;
 		if (isDeviation && !comment) {
 			throw new Error('Please add a comment explaining why you are not choosing the recommended supplier');

@@ -8,11 +8,13 @@ import { MarketStudyPanel } from './MarketStudy';
 import { AiRankBadge, LRankBadge, RecommendationCard, SelectSupplierList } from './SupplierSelection';
 import {
   aiRankByVendor,
+  getMarketSearch,
   getMarketStudy,
   getOnlinePrice,
   RANK_HELP,
   recommendSupplier,
   type MarketInputs,
+  type MarketSearch,
   type OnlinePrice,
   type SupplierRecommendation,
 } from '../../data/rfq-recommendation';
@@ -193,18 +195,21 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [showAwardReview, setShowAwardReview] = useState(false);
   // The one supplier the buyer picks to award to (product review, Oct 16:
   // "ask them to pick one"). Nothing is pre-selected — there's no
-  // recommendation until the buyer asks for the AI Recommendation.
+  // recommendation until the buyer asks for the System Recommendation.
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
   // The pick once confirmed and saved (rfq_supplier_selections); only a saved
   // pick can go to approval.
   const [selection, setSelection] = useState<SupplierSelection | null>(null);
 
-  // AI Recommendation: market study, online price, then the pick.
+  // System Recommendation: market study, online price, then the pick.
   const [studyOpen, setStudyOpen] = useState(false);
   const [market, setMarket] = useState<MarketInputs | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
   const [online, setOnline] = useState<OnlinePrice | null>(null);
   const [onlineLoading, setOnlineLoading] = useState(false);
+  // Prices and suppliers per market (card ③); runs alongside, the recommendation doesn't wait for it.
+  const [marketSearch, setMarketSearch] = useState<MarketSearch | null>(null);
+  const [marketSearchLoading, setMarketSearchLoading] = useState(false);
   const [rec, setRec] = useState<SupplierRecommendation | null>(null);
   const [recLoading, setRecLoading] = useState(false);
   const [recError, setRecError] = useState<string | null>(null);
@@ -221,6 +226,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     setMarketError(null);
     setOnline(null);
     setOnlineLoading(false);
+    setMarketSearch(null);
+    setMarketSearchLoading(false);
     setRec(null);
     setRecLoading(false);
     setRecError(null);
@@ -240,6 +247,14 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     setRecError(null);
     setRecLoading(true);
     setOnlineLoading(true);
+
+    // Prices and suppliers in each market: slower (about a minute), fills card ③ when done.
+    setMarketSearch(null);
+    setMarketSearchLoading(true);
+    getMarketSearch(rfqId, SA_RUNTIME, refresh)
+      .then((found) => current() && setMarketSearch(found))
+      .catch(() => current() && setMarketSearch({ available: false, profile: null, regions: [], summary: "Couldn't search the markets just now." }))
+      .finally(() => current() && setMarketSearchLoading(false));
 
     if (refresh) {
       setMarket(null);
@@ -379,10 +394,10 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
 
   // No built-in recommendation here: the product review (Oct 16) rejected
   // comparing on lowest price / compliance / delivery and wants nothing
-  // recommended until the buyer asks for the AI Recommendation.
+  // recommended until the buyer asks for the System Recommendation.
   const selectedQuote = quotes.find((q) => q.vendor_id === selectedVendorId) ?? null;
   const readyForApproval = !!selectedQuote && selection?.vendorId === selectedQuote.vendor_id && header?.rfq_status !== 'Awarded';
-  // Filled once the AI Recommendation has run; same order as Select Supplier.
+  // Filled once the System Recommendation has run; same order as Select Supplier.
   const aiRanks = aiRankByVendor(rec);
 
   const commodityTrend = useMemo(() => {
@@ -643,7 +658,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
           <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-            Technically accepted vendors by quoted price. T-rank and L-rank are separate; the AI rank fills in after the AI Recommendation.
+            Technically accepted vendors by quoted price. T-rank and L-rank are separate; the AI rank fills in after the System Recommendation.
           </p>
           {notAcceptedCount > 0 && (
             <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
@@ -725,7 +740,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                 style={{ backgroundColor: TEAL.base, color: COLORS.white }}
               >
                 <Icon icon="mdi:creation-outline" className="w-4 h-4" />
-                AI Recommendation
+                System Recommendation
               </button>
             )}
           </div>
@@ -738,6 +753,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             market={market}
             online={online}
             onlineLoading={onlineLoading}
+            marketSearch={marketSearch}
+            marketSearchLoading={marketSearchLoading}
             error={marketError}
             quotes={quotes.map((q) => ({ vendorId: q.vendor_id, price: q.quoted_price }))}
           />
@@ -779,7 +796,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <p className="text-[11px] mr-auto" style={{ color: COLORS.text.tertiary }}>
             {header?.rfq_status === 'Awarded'
               ? 'This RFQ is already awarded.'
-              : 'Run the AI Recommendation, then select and confirm one supplier.'}
+              : 'Run the System Recommendation, then select and confirm one supplier.'}
           </p>
         )}
         <button
