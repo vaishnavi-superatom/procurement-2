@@ -1,31 +1,31 @@
 import React from 'react';
 import type { ComponentMetadata } from '../../types';
-import PlaceholderPage from '../_shared/PlaceholderPage';
+import VendorsOnboardedHome from '../VendorsOnboardedHome';
 
+// "Vendors", not "Vendors Onboarded" (walkthrough, 16 Oct): a list of vendors,
+// each opening its profile page — the same directory as the Home "Vendors" card.
 const METADATA: ComponentMetadata = {
   id: 'vendors-onboarded-dashboard',
   name: 'VendorsOnboarded',
-  displayName: 'Show vendors onboarded dashboard',
+  displayName: 'Show vendors',
   isDisplayComp: true,
   type: 'VendorsOnboarded',
-  description: 'Dashboard for vendor onboarding status',
+  description: 'Vendor directory; each vendor opens a profile page with picture, rating, contracts and supply history',
   category: 'Dashboard',
-  keywords: ['vendors', 'onboarding', 'suppliers', 'procurement'],
-  dashboard: { label: 'Vendors Onboarded', icon: 'mdi:file-document-edit-outline', order: 5 },
+  keywords: ['vendors', 'suppliers', 'vendor profile', 'contracts', 'supply history', 'procurement'],
+  dashboard: { label: 'Vendors', icon: 'mdi:storefront-outline', order: 5 },
   props: {},
 };
 
-interface VendorsOnboardedComponent extends React.FC {
+interface VendorsOnboardedProps {
+  SA_RUNTIME?: unknown;
+}
+
+interface VendorsOnboardedComponent extends React.FC<VendorsOnboardedProps> {
   Metadata: ComponentMetadata;
 }
 
-const VendorsOnboarded: React.FC = () => (
-  <PlaceholderPage
-    icon="mdi:file-document-edit-outline"
-    title="Vendors Onboarded"
-    description="Review vendors onboarded and their onboarding status. This dashboard is coming soon."
-  />
-);
+const VendorsOnboarded: React.FC<VendorsOnboardedProps> = ({ SA_RUNTIME }) => <VendorsOnboardedHome SA_RUNTIME={SA_RUNTIME} />;
 
 (VendorsOnboarded as VendorsOnboardedComponent).Metadata = METADATA;
 

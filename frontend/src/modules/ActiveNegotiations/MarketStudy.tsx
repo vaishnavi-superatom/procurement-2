@@ -84,7 +84,8 @@ const Sparkline: React.FC<{ labels: string[]; values: number[]; ariaLabel: strin
   );
 };
 
-const Card: React.FC<{ n: number; title: string; children: React.ReactNode }> = ({ n, title, children }) => (
+/** `hint`: one line saying what the card is, for inputs that aren't self-explanatory. */
+const Card: React.FC<{ n: number; title: string; hint?: string; children: React.ReactNode }> = ({ n, title, hint, children }) => (
   <div className="rounded-lg p-3 flex flex-col gap-1.5 min-w-0" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white }}>
     <div className="flex items-center gap-1.5">
       <span
@@ -95,6 +96,7 @@ const Card: React.FC<{ n: number; title: string; children: React.ReactNode }> = 
       </span>
       <span className="text-[11px] font-semibold uppercase tracking-wide truncate" style={{ color: COLORS.text.secondary }}>{title}</span>
     </div>
+    {hint && <p className="text-[11px] leading-snug" style={{ color: COLORS.text.tertiary }}>{hint}</p>}
     {children}
   </div>
 );
@@ -258,7 +260,11 @@ const SustainabilityCard: React.FC<{ data: Sustainability | null; vendorIds: str
     .map((v) => ({ ...v, score: Number(v.ecovadisScore) }))
     .sort((a, b) => b.score - a.score);
   return (
-    <Card n={4} title="Sustainability · EcoVadis">
+    <Card
+      n={4}
+      title="Sustainability · EcoVadis"
+      hint="EcoVadis rates a supplier's environment, labour, ethics and sourcing practices from 0 to 100; higher is better."
+    >
       {!data ? (
         <Skeleton />
       ) : rows.length === 0 ? (
@@ -285,41 +291,73 @@ const SustainabilityCard: React.FC<{ data: Sustainability | null; vendorIds: str
   );
 };
 
-/** ⑤ Our best active rate-contract price for this material, against the lowest quote. */
-const ContractCard: React.FC<{ data: ContractBenchmark | null; lowestQuote: number | null; unit?: string }> = ({ data, lowestQuote, unit }) => {
-  const best = data?.activeContracts?.[0] ?? null;
-  const vsLowest = best && lowestQuote ? ((lowestQuote - best.price) / best.price) * 100 : null;
+/** A quote still in the running: who, and at what unit price. */
+interface QuoteRef {
+  vendorId: string;
+  price: number;
+}
+
+/** "8.4% below" / "3.1% above": how far `value` sits from `base`. */
+const vsText = (value: number, base: number): string => {
+  const p = ((value - base) / base) * 100;
+  return `${Math.abs(p).toFixed(1)}% ${p <= 0 ? 'below' : 'above'}`;
+};
+
+/**
+ * ⑤ Prices we already agreed with suppliers for this item: whose each
+ * contract is, and whether that supplier quoted on this RFQ (walkthrough,
+ * 16 Oct: "rate contract of who?").
+ */
+const ContractCard: React.FC<{ data: ContractBenchmark | null; quotes: QuoteRef[]; unit?: string }> = ({ data, quotes, unit }) => {
+  const active = data?.activeContracts ?? []; // cheapest first
+  const best = active[0] ?? null;
+  const lowest = quotes.length ? Math.min(...quotes.map((q) => q.price)) : null;
+  // Every quoting vendor that holds an active contract, Not accepted ones included.
+  const quotedIds = new Set((data?.quotingVendorsWithContract ?? []).map((v) => v.vendorId));
+  const statusOf = (vendorId: string, contractPrice: number): string => {
+    const q = quotes.find((x) => x.vendorId === vendorId);
+    if (q) return `also quoted ${formatINR(q.price)} on this RFQ, ${vsText(q.price, contractPrice)} this contract`;
+    if (quotedIds.has(vendorId)) return 'quoted on this RFQ, but was ranked Not accepted';
+    return "didn't quote on this RFQ";
+  };
   return (
-    <Card n={5} title="Rate contract">
+    <Card
+      n={5}
+      title="Rate contract"
+      hint="A price we've already agreed with a supplier for this item, valid until an end date. If the quotes are higher, buying on the contract may be cheaper."
+    >
       {!data ? (
         <Skeleton />
       ) : !data.available || !best ? (
         <Unavailable text={data.summary} />
       ) : (
         <>
-          <div>
-            <p className="text-lg font-bold leading-tight" style={{ color: COLORS.text.primary }}>
-              {formatINR(best.price)}
-              {unit && <span className="text-[11px] font-normal" style={{ color: COLORS.text.tertiary }}> / {unit}</span>}
-            </p>
+          <ul className="space-y-2 pt-0.5">
+            {active.map((c) => (
+              <li key={c.contractId}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs truncate" style={{ color: COLORS.text.primary }}>
+                    Our contract with <b>{c.vendorName}</b>
+                  </span>
+                  <span className="text-sm font-bold whitespace-nowrap" style={{ color: COLORS.text.primary }}>
+                    {formatINR(c.price)}
+                    {unit && <span className="text-[11px] font-normal" style={{ color: COLORS.text.tertiary }}> / {unit}</span>}
+                  </span>
+                </div>
+                <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
+                  {c.contractId}, valid until {formatDay(c.endDate)} · {statusOf(c.vendorId, c.price)}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {lowest != null && (
             <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-              {best.vendorName} · {best.contractId}, until {formatDay(best.endDate)}
-            </p>
-          </div>
-          {vsLowest != null && (
-            <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-              Lowest quote is {formatPct(vsLowest)} {vsLowest <= 0 ? '(below the contract)' : '(above the contract)'}
+              Lowest quote ({formatINR(lowest)}) is {vsText(lowest, best.price)} the {active.length > 1 ? 'best ' : ''}contract price.
             </p>
           )}
-          <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-            {data.quotingVendorsWithContract && data.quotingVendorsWithContract.length > 0
-              ? `Holds a contract and quoted: ${data.quotingVendorsWithContract.map((v) => v.vendorName).join(', ')}`
-              : 'None of the quoting vendors holds a contract for it'}
-          </p>
-          {(data.activeContracts!.length > 1 || (data.expiredContracts ?? 0) > 0) && (
+          {(data.expiredContracts ?? 0) > 0 && (
             <p className="text-[10px]" style={{ color: COLORS.text.tertiary }}>
-              {data.activeContracts!.length} active
-              {(data.expiredContracts ?? 0) > 0 && `, ${data.expiredContracts} expired`} contract{data.activeContracts!.length + (data.expiredContracts ?? 0) === 1 ? '' : 's'}
+              {data.expiredContracts} expired contract{data.expiredContracts === 1 ? '' : 's'} for this item not shown.
             </p>
           )}
         </>
@@ -334,12 +372,12 @@ export const MarketStudyPanel: React.FC<{
   online: OnlinePrice | null;
   onlineLoading: boolean;
   error: string | null;
-  /** Vendors still in the running (Not accepted left out). */
-  vendorIds: string[];
-  lowestQuote: number | null;
-}> = ({ market, online, onlineLoading, error, vendorIds, lowestQuote }) => {
+  /** Quotes still in the running (Not accepted left out). */
+  quotes: QuoteRef[];
+}> = ({ market, online, onlineLoading, error, quotes }) => {
   // Collapsed at first: the recommendation below is what the buyer reads first.
   const [expanded, setExpanded] = useState(false);
+  const vendorIds = quotes.map((q) => q.vendorId);
   return (
     <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
       <button
@@ -372,7 +410,7 @@ export const MarketStudyPanel: React.FC<{
             <CommodityCard data={market?.commodity ?? null} />
             <OnlineCard data={online ?? market?.online ?? null} loading={onlineLoading} />
             <SustainabilityCard data={market?.sustainability ?? null} vendorIds={vendorIds} />
-            <ContractCard data={market?.contract ?? null} lowestQuote={lowestQuote} unit={market?.historical?.unit} />
+            <ContractCard data={market?.contract ?? null} quotes={quotes} unit={market?.historical?.unit} />
           </div>
         ))}
     </div>

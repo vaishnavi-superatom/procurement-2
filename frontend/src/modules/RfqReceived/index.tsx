@@ -820,6 +820,7 @@ const RfqDetailScreen: React.FC<{
                   <tr
                     onClick={() => setExpandedQuoteId(expanded ? null : q.quote_id)}
                     aria-expanded={expanded}
+                    title={expanded ? 'Click to collapse' : 'Click to see the technical evaluation'}
                     className="cursor-pointer"
                     style={{
                       borderTop: `1px solid ${COLORS.lightGray}`,
@@ -874,6 +875,18 @@ const RfqDetailScreen: React.FC<{
                             }));
                           }}
                         />
+                        {/* An obvious way to close the panel (walkthrough, 16 Oct: "is there a way to collapse it?"). */}
+                        <div className="flex justify-center pb-3" style={{ backgroundColor: COLORS.lightBackground }}>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedQuoteId(null)}
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium"
+                            style={{ color: TEAL.base, border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white }}
+                          >
+                            <Icon icon="mdi:chevron-up" className="w-3.5 h-3.5" />
+                            Collapse {q.vendor_name || q.vendor_id}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )}

@@ -1013,6 +1013,23 @@ const PRDetailScreen: React.FC<{
                 No RFQ yet, and we haven't bought this material or similar items before.
               </p>
             )}
+            {/* Same button, same place as "Evaluate RFQ" on a PR with an RFQ
+                (walkthrough, 16 Oct), disabled until one is received. */}
+            {onEvaluateRfq && (
+              <div className="px-4 py-3 flex justify-end" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                <span title="No RFQ has been received for this PR yet, so there is nothing to evaluate.">
+                  <button
+                    type="button"
+                    disabled
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold"
+                    style={{ backgroundColor: COLORS.lightGray, color: COLORS.text.tertiary, cursor: 'not-allowed' }}
+                  >
+                    <Icon icon="mdi:clipboard-clock-outline" className="w-4 h-4" />
+                    No RFQs received
+                  </button>
+                </span>
+              </div>
+            )}
           </div>
         )}
 

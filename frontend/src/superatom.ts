@@ -81,7 +81,7 @@ const COMPONENTS = {
     ActiveNegotiations, // opened from an RFQ's "Start Negotiation" button — no dashboard route
     ApprovedRfqsHome,  // embedded in Home via the "Approved RFQs" card — no dashboard route
     RfqApprovalHome,   // opened from a negotiation's "Proceed to Approval" button — no dashboard route
-    VendorsOnboardedHome, // embedded in Home via the "Vendors Onboarded" card — no dashboard route
+    VendorsOnboardedHome, // embedded in Home via the "Vendors" card — no dashboard route
     // CatalogClassification, // → /dash/CatalogClassification — removed from sidebar for now
     InventoryCapital,  // → /dash/InventoryCapital
     Negotiations,      // → /dash/Negotiations

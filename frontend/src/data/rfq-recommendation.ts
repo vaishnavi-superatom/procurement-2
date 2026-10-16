@@ -124,6 +124,27 @@ export interface SupplierRecommendation {
   reused: boolean;
 }
 
+/**
+ * The AI's order, used by Select Supplier and the AI Rank column: the
+ * recommended vendor first, then the rest by combined score.
+ */
+export function aiRanking(rec: SupplierRecommendation): RankedVendor[] {
+  const first = rec.data.filter((v) => v.vendorId === rec.recommendedVendorId);
+  const rest = rec.data.filter((v) => v.vendorId !== rec.recommendedVendorId).sort((a, b) => b.score - a.score || a.position - b.position);
+  return [...first, ...rest];
+}
+
+/** vendorId → AI rank (1 = recommended); empty until the AI Recommendation has run. */
+export const aiRankByVendor = (rec: SupplierRecommendation | null): Map<string, number> =>
+  new Map((rec ? aiRanking(rec) : []).map((v, i) => [v.vendorId, i + 1]));
+
+/** Header tooltips for the rank columns: T and L are separate ranks, not one combined value. */
+export const RANK_HELP: Record<string, string> = {
+  'T-Rank': 'Technical rank from evaluation: T1 meets every requirement comfortably, T4 has a small deviation',
+  'L-Rank': 'Price rank among technically accepted vendors: L1 is the lowest price',
+  'AI Rank': 'Order from the AI Recommendation: 1 is the recommended vendor, the rest follow by combined score (60% price, 40% technical)',
+};
+
 // The slice of the global tool executor (data/tool-executor.ts) this file uses.
 interface ToolExecutorLike {
   executeTool(args: {

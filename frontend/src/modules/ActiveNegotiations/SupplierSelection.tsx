@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { COLORS, SHADOWS } from '../../design-system/tokens';
 import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
-import type { RankedVendor, SupplierRecommendation } from '../../data/rfq-recommendation';
+import { aiRanking, RANK_HELP, type RankedVendor, type SupplierRecommendation } from '../../data/rfq-recommendation';
 import { selectSupplier, type SupplierSelection } from '../../data/rfq-workflow';
 
 const TEAL = {
@@ -28,12 +28,38 @@ const formatTime = (iso: string | null | undefined): string => {
   return isNaN(d.getTime()) ? '' : d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 };
 
-const Ranks: React.FC<{ tRank: string | null; lRank: string | null }> = ({ tRank, lRank }) => (
-  <span className="whitespace-nowrap">
-    <TRankBadge rank={tRank} />
-    {lRank && <span className="ml-1.5 text-[11px] font-semibold" style={{ color: COLORS.text.secondary }}>{lRank}</span>}
-  </span>
-);
+// T, L and AI ranks are separate columns (walkthrough, 16 Oct: "they are
+// individual columns, not combined T1 L1").
+
+/** Price rank among technically accepted vendors (L1 = lowest price). */
+export const LRankBadge: React.FC<{ rank: string | null | undefined }> = ({ rank }) =>
+  rank ? (
+    <span
+      className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      style={{ backgroundColor: COLORS.lightGray, color: COLORS.text.primary }}
+    >
+      {rank}
+    </span>
+  ) : (
+    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }}>—</span>
+  );
+
+/** Place in the AI Recommendation's order: 1 = recommended, then by combined score. */
+export const AiRankBadge: React.FC<{ rank: number | null | undefined }> = ({ rank }) =>
+  rank ? (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+      style={rank === 1 ? { backgroundColor: TEAL.base, color: COLORS.white } : { backgroundColor: COLORS.lightGray, color: COLORS.text.secondary }}
+      title={rank === 1 ? 'Recommended by the AI' : undefined}
+    >
+      {rank === 1 && <Icon icon="mdi:creation" className="w-3 h-3" />}
+      {rank}
+    </span>
+  ) : (
+    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the AI Recommendation to rank">
+      —
+    </span>
+  );
 
 const weightsText = (rec: SupplierRecommendation): string =>
   `${Math.round((rec.weights?.price ?? 0.6) * 100)}% price rank (L), ${Math.round((rec.weights?.technical ?? 0.4) * 100)}% technical rank (T)`;
@@ -87,7 +113,12 @@ export const RecommendationCard: React.FC<{
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-base font-bold" style={{ color: COLORS.text.primary }}>{rec.recommendedVendor || rec.recommendedVendorId}</span>
-              {pick && <Ranks tRank={pick.tRank} lRank={pick.lRank} />}
+              {pick && (
+                <span className="inline-flex items-center gap-1.5">
+                  <TRankBadge rank={pick.tRank} />
+                  <LRankBadge rank={pick.lRank} />
+                </span>
+              )}
               {pick && (
                 <span className="text-[11px]" style={{ color: COLORS.text.secondary }}>
                   {formatINR(pick.quotedPrice)} / {rec.unit} · {pick.deliveryDays} days
@@ -118,13 +149,6 @@ export const RecommendationCard: React.FC<{
   );
 };
 
-/** Recommended vendor first, then the rest by combined score. */
-const rankForSelection = (rec: SupplierRecommendation): RankedVendor[] => {
-  const first = rec.data.filter((v) => v.vendorId === rec.recommendedVendorId);
-  const rest = rec.data.filter((v) => v.vendorId !== rec.recommendedVendorId).sort((a, b) => b.score - a.score || a.position - b.position);
-  return [...first, ...rest];
-};
-
 /** Pick one supplier; the pop-up confirms it (or asks why, for a deviation) and saves it. */
 export const SelectSupplierList: React.FC<{
   rfqId: string;
@@ -135,7 +159,7 @@ export const SelectSupplierList: React.FC<{
   onSaved: (selection: SupplierSelection) => void;
 }> = ({ rfqId, rec, pickedVendorId, onPick, selection, onSaved }) => {
   const [confirming, setConfirming] = useState(false);
-  const rows = rankForSelection(rec);
+  const rows = aiRanking(rec);
   const picked = rows.find((v) => v.vendorId === pickedVendorId) ?? null;
   const savedForPick = selection && selection.vendorId === pickedVendorId;
 
@@ -151,15 +175,20 @@ export const SelectSupplierList: React.FC<{
       <table className="w-full text-sm">
         <thead>
           <tr style={{ backgroundColor: COLORS.lightBackground }}>
-            {['', 'Vendor', 'T · L', 'Score', 'Quoted Price', 'vs our 12-mo avg', 'vs contract', 'Delivery', 'EcoVadis', 'Flags'].map((h, i) => (
-              <th key={i} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
+            {['', 'AI Rank', 'Vendor', 'T-Rank', 'L-Rank', 'Score', 'Quoted Price', 'vs our 12-mo avg', 'vs contract', 'Delivery', 'EcoVadis', 'Flags'].map((h, i) => (
+              <th
+                key={i}
+                title={RANK_HELP[h]}
+                className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap"
+                style={{ color: COLORS.text.secondary }}
+              >
                 {h}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((v) => {
+          {rows.map((v, i) => {
             const checked = pickedVendorId === v.vendorId;
             const recommended = v.vendorId === rec.recommendedVendorId;
             return (
@@ -180,6 +209,7 @@ export const SelectSupplierList: React.FC<{
                     aria-label={`Select ${v.vendorName}`}
                   />
                 </td>
+                <td className="px-4 py-2"><AiRankBadge rank={i + 1} /></td>
                 <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
                   <span className="font-medium">{v.vendorName}</span>
                   {recommended && (
@@ -188,7 +218,8 @@ export const SelectSupplierList: React.FC<{
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-2"><Ranks tRank={v.tRank} lRank={v.lRank} /></td>
+                <td className="px-4 py-2"><TRankBadge rank={v.tRank} /></td>
+                <td className="px-4 py-2"><LRankBadge rank={v.lRank} /></td>
                 <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{v.score.toFixed(2)}</td>
                 <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>{formatINR(v.quotedPrice)}</td>
                 <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatPct(v.vsHistoricalAvgPct)}</td>

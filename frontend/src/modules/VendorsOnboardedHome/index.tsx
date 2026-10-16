@@ -3,6 +3,7 @@ import { Icon } from '@iconify/react';
 import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, SHADOWS } from '../../design-system/tokens';
 import LoadingState from '../../components/LoadingState';
+import { VendorProfile } from './VendorProfile';
 
 interface VendorsOnboardedHomeProps {
   SA_RUNTIME?: any;
@@ -44,8 +45,7 @@ const TEAL = {
 };
 
 // ============================================================
-// Real data shapes (public.vendor_master / supplier_scorecard / contracts /
-// contract_items / material_master).
+// Real data shape (public.vendor_master); the profile page loads the rest.
 // ============================================================
 
 interface VendorRow {
@@ -60,47 +60,12 @@ interface VendorRow {
   is_active: boolean;
 }
 
-interface VendorProfile extends VendorRow {
-  annual_spend: number | null;
-  otd_pct: number | null;
-  otd_trend: string | null;
-  quality_acceptance_pct: number | null;
-  open_quality_incidents: number | null;
-  financial_risk_tier: string | null;
-  overall_risk: string | null;
-  sanctions_flag: boolean | null;
-  ecovadis_score: number | null;
-  sustainability_tier: string | null;
-}
-
-interface ContractRow {
-  contract_id: string;
-  vendor_id: string;
-  contract_type: string;
-  material_group: string;
-  start_date: string;
-  end_date: string;
-  total_contract_value: number;
-  price_escalation_clause: boolean;
-  escalation_index: string | null;
-}
-
-interface ContractItemRow {
-  contract_id: string;
-  material_id: string;
-  contract_unit_price: number;
-  material_desc: string | null;
-  material_group: string | null;
-  unit_of_measure: string | null;
-}
-
 // ============================================================
 // Query helpers — same ToolExecutor path as the other procurement modules.
 // ============================================================
 
 const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
-const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
 async function runTool<T = any>(sql: string, params: Record<string, any> | undefined, SA_RUNTIME: any): Promise<T[]> {
   const toolExecutor = (window as any).SA?.ToolExecutor;
@@ -115,11 +80,6 @@ async function runTool<T = any>(sql: string, params: Record<string, any> | undef
   return rows as T[];
 }
 
-const formatINR = (n: number | null | undefined): string => {
-  if (n === null || n === undefined || isNaN(n)) return '—';
-  return '₹' + Math.round(n).toLocaleString('en-IN');
-};
-
 const formatDate = (d: string | null | undefined): string => {
   if (!d) return '—';
   const date = new Date(d);
@@ -130,10 +90,10 @@ const formatDate = (d: string | null | undefined): string => {
 const METADATA: ComponentMetadata = {
   id: 'vendors-onboarded-home',
   name: 'VendorsOnboardedHome',
-  displayName: 'Vendors Onboarded (Home tab)',
+  displayName: 'Vendors (Home tab)',
   isDisplayComp: true,
   type: 'VendorsOnboardedHome',
-  description: 'Vendor directory, profile, and contracts, embedded on the Home "Vendors Onboarded" card',
+  description: 'Vendor directory and a profile page for each vendor (picture, rating, contracts, supply history), embedded on the Home "Vendors" card',
   category: 'Dashboard',
   keywords: ['vendors', 'onboarding', 'suppliers', 'contracts', 'esg', 'risk', 'procurement'],
   props: {},
@@ -143,29 +103,8 @@ interface VendorsOnboardedHomeComponent extends React.FC<VendorsOnboardedHomePro
   Metadata: ComponentMetadata;
 }
 
-// Back-navigable view stack: directory → profile → contracts (active/past) → one contract's detail.
-type View =
-  | { kind: 'directory' }
-  | { kind: 'profile'; vendorId: string }
-  | { kind: 'contracts'; vendorId: string; filter: 'active' | 'past' }
-  | { kind: 'contractDetail'; vendorId: string; filter: 'active' | 'past'; contractId: string };
-
-const RiskBadge: React.FC<{ tier: string | null }> = ({ tier }) => {
-  if (!tier) return <span style={{ color: COLORS.text.tertiary }}>—</span>;
-  const high = tier === 'High';
-  const med = tier === 'Medium';
-  return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold"
-      style={{
-        backgroundColor: high ? '#F1F5F9' : med ? '#FFEDD5' : '#DCFCE7',
-        color: high ? '#475569' : med ? '#EA580C' : '#16A34A',
-      }}
-    >
-      {tier}
-    </span>
-  );
-};
+// The directory, or one vendor's profile page (the directory keeps its search and filter when you come back).
+type View = { kind: 'directory' } | { kind: 'profile'; vendorId: string };
 
 const ToolbarDropdown: React.FC<{ label: string; icon: string; value: string; options: string[]; onChange: (v: string) => void }> = ({
   label,
@@ -235,18 +174,6 @@ const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME,
 
   const [view, setView] = useState<View>({ kind: 'directory' });
 
-  const [profile, setProfile] = useState<VendorProfile | null>(null);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [profileError, setProfileError] = useState<string | null>(null);
-
-  const [contracts, setContracts] = useState<ContractRow[]>([]);
-  const [contractsLoading, setContractsLoading] = useState(false);
-  const [contractsError, setContractsError] = useState<string | null>(null);
-
-  const [contractItems, setContractItems] = useState<ContractItemRow[]>([]);
-  const [itemsLoading, setItemsLoading] = useState(false);
-  const [itemsError, setItemsError] = useState<string | null>(null);
-
   // 1. Vendor directory
   useEffect(() => {
     let cancelled = false;
@@ -291,120 +218,6 @@ const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME,
     return vendors.reduce((max, v) => (v.onboarding_date > max ? v.onboarding_date : max), vendors[0].onboarding_date);
   }, [vendors]);
 
-  // 3. Vendor profile (fetched on open)
-  useEffect(() => {
-    if (view.kind !== 'profile' && view.kind !== 'contracts' && view.kind !== 'contractDetail') return;
-    const vendorId = view.vendorId;
-    if (!SAFE_ID.test(vendorId)) return;
-    let cancelled = false;
-    (async () => {
-      setProfileLoading(true);
-      setProfileError(null);
-      try {
-        const rows = await runTool<VendorProfile>(
-          `
-          SELECT v.vendor_id, v.vendor_name, v.vendor_type, v.category_specialization, v.city, v.state,
-                 v.payment_terms, v.onboarding_date, v.is_active,
-                 sc.annual_spend, sc.otd_pct, sc.otd_trend, sc.quality_acceptance_pct, sc.open_quality_incidents,
-                 sc.financial_risk_tier, sc.overall_risk, sc.sanctions_flag, sc.ecovadis_score, sc.sustainability_tier
-          FROM vendor_master v
-          LEFT JOIN supplier_scorecard sc ON sc.vendor_id = v.vendor_id
-          WHERE v.vendor_id = @vendorId
-          LIMIT 1;
-          `,
-          { vendorId },
-          SA_RUNTIME
-        );
-        if (cancelled) return;
-        if (rows.length === 0) throw new Error(`No vendor found for ${vendorId}`);
-        setProfile(rows[0]);
-      } catch (err) {
-        if (!cancelled) setProfileError(err instanceof Error ? err.message : 'Failed to load this vendor');
-      } finally {
-        if (!cancelled) setProfileLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [view, SA_RUNTIME]);
-
-  // 4. Contracts for the vendor (fetched once per vendor; active/past split client-side by date)
-  useEffect(() => {
-    if (view.kind !== 'profile' && view.kind !== 'contracts' && view.kind !== 'contractDetail') return;
-    const vendorId = view.vendorId;
-    if (!SAFE_ID.test(vendorId)) return;
-    let cancelled = false;
-    (async () => {
-      setContractsLoading(true);
-      setContractsError(null);
-      try {
-        const rows = await runTool<ContractRow>(
-          `
-          SELECT contract_id, vendor_id, contract_type, material_group, start_date, end_date,
-                 total_contract_value, price_escalation_clause, escalation_index
-          FROM contracts
-          WHERE vendor_id = @vendorId
-          ORDER BY start_date DESC;
-          `,
-          { vendorId },
-          SA_RUNTIME
-        );
-        if (!cancelled) setContracts(rows);
-      } catch (err) {
-        if (!cancelled) setContractsError(err instanceof Error ? err.message : 'Failed to load contracts');
-      } finally {
-        if (!cancelled) setContractsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [view, SA_RUNTIME]);
-
-  const now = useMemo(() => new Date(), []);
-  const activeContracts = useMemo(() => contracts.filter((c) => new Date(c.end_date) >= now), [contracts, now]);
-  const pastContracts = useMemo(() => contracts.filter((c) => new Date(c.end_date) < now), [contracts, now]);
-
-  // 5. Contract detail — line items for the selected contract
-  useEffect(() => {
-    if (view.kind !== 'contractDetail') return;
-    const contractId = view.contractId;
-    if (!SAFE_ID.test(contractId)) return;
-    let cancelled = false;
-    (async () => {
-      setItemsLoading(true);
-      setItemsError(null);
-      try {
-        const rows = await runTool<ContractItemRow>(
-          `
-          SELECT ci.contract_id, ci.material_id, ci.contract_unit_price, m.material_desc, m.material_group, m.unit_of_measure
-          FROM contract_items ci
-          LEFT JOIN material_master m ON m.material_id = ci.material_id
-          WHERE ci.contract_id = @contractId
-          ORDER BY m.material_desc ASC;
-          `,
-          { contractId },
-          SA_RUNTIME
-        );
-        if (!cancelled) setContractItems(rows);
-      } catch (err) {
-        if (!cancelled) setItemsError(err instanceof Error ? err.message : 'Failed to load contract items');
-      } finally {
-        if (!cancelled) setItemsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [view, SA_RUNTIME]);
-
-  const goBack = () => {
-    if (view.kind === 'contractDetail') setView({ kind: 'contracts', vendorId: view.vendorId, filter: view.filter });
-    else if (view.kind === 'contracts') setView({ kind: 'profile', vendorId: view.vendorId });
-    else if (view.kind === 'profile') setView({ kind: 'directory' });
-  };
-
   // ============================================================
   // Directory
   // ============================================================
@@ -426,7 +239,7 @@ const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME,
       <div className="w-full flex flex-col" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl, height: 'calc(100vh - 160px)', minHeight: 480 }}>
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4 flex-shrink-0">
           <div>
-            <h1 className="text-xl font-bold" style={{ color: COLORS.text.primary }}>Vendors Onboarded</h1>
+            <h1 className="text-xl font-bold" style={{ color: COLORS.text.primary }}>Vendors</h1>
             <p className="text-xs mt-0.5" style={{ color: COLORS.text.secondary }}>
               {filteredVendors.length.toLocaleString('en-IN')} of {vendors.length.toLocaleString('en-IN')} vendors
             </p>
@@ -527,275 +340,9 @@ const VendorsOnboardedHome: React.FC<VendorsOnboardedHomeProps> = ({ SA_RUNTIME,
   }
 
   // ============================================================
-  // Profile / Contracts / Contract detail share the back-nav header
+  // Vendor profile: its own page (picture, rating, contracts, supply history)
   // ============================================================
-  const backLabel =
-    view.kind === 'profile' ? 'Back to Vendor Directory' : view.kind === 'contracts' ? 'Back to Vendor Profile' : 'Back to Contracts';
-
-  if (profileLoading && !profile) {
-    return <LoadingState height={520} message="Loading vendor profile…" variant="skeleton" size="lg" />;
-  }
-  if (profileError || !profile) {
-    return (
-      <div className="w-full">
-        <button onClick={goBack} className="flex items-center gap-1.5 text-xs font-medium mb-4" style={{ color: TEAL.base }}>
-          <Icon icon="mdi:arrow-left" className="w-4 h-4" /> {backLabel}
-        </button>
-        <div className="bg-white rounded-xl shadow-sm border border-[#F1F5F9] p-6">
-          <div className="flex items-center gap-3">
-            <Icon icon="mdi:alert-circle" className="w-5 h-5 text-[#475569] flex-shrink-0" />
-            <p className="text-sm" style={{ color: '#475569' }}>{profileError || 'Vendor not found.'}</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ============================================================
-  // 3. Vendor profile
-  // ============================================================
-  if (view.kind === 'profile') {
-    return (
-      <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
-        <button onClick={goBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>
-          <Icon icon="mdi:arrow-left" className="w-4 h-4" /> {backLabel}
-        </button>
-        <div className="flex items-center gap-3 mb-4">
-          <h1 className="text-xl font-bold" style={{ color: COLORS.text.primary }}>{profile.vendor_name}</h1>
-          <span
-            className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
-            style={{ backgroundColor: profile.is_active ? '#DCFCE7' : COLORS.lightGray, color: profile.is_active ? '#16A34A' : COLORS.text.secondary }}
-          >
-            {profile.is_active ? 'Active' : 'Inactive'}
-          </span>
-        </div>
-
-        {/* Available profile data: location, actual spend, OTD, quality, risk, ESG */}
-        <div
-          className="rounded-lg px-4 py-2.5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5"
-          style={{ backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0' }}
-        >
-          {[
-            ['Location', [profile.city, profile.state].filter(Boolean).join(', ') || '—'],
-            ['Type', profile.vendor_type],
-            ['Specialization', profile.category_specialization],
-            ['Payment Terms', profile.payment_terms],
-            ['Onboarded', formatDate(profile.onboarding_date)],
-            ['Actual Spend', profile.annual_spend != null ? formatINR(profile.annual_spend) : 'Not available'],
-          ].map(([label, value]) => (
-            <div key={label} className="flex items-baseline gap-1.5">
-              <span className="text-[10px] uppercase tracking-wide" style={{ color: '#15803D' }}>{label}</span>
-              <span className="text-xs font-semibold" style={{ color: '#14532D' }}>{value}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* Performance: OTD, quality, risk, ESG */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-          {[
-            {
-              label: 'On-Time Delivery',
-              value: profile.otd_pct != null ? `${profile.otd_pct}%` : 'Not available',
-              sub: profile.otd_trend || undefined,
-              icon: 'mdi:truck-fast-outline',
-            },
-            {
-              label: 'Quality Acceptance',
-              value: profile.quality_acceptance_pct != null ? `${profile.quality_acceptance_pct}%` : 'Not available',
-              sub: profile.open_quality_incidents != null ? `${profile.open_quality_incidents} open incidents` : undefined,
-              icon: 'mdi:check-decagram-outline',
-            },
-            {
-              label: 'Risk',
-              value: profile.overall_risk || 'Not available',
-              sub: profile.sanctions_flag ? 'Sanctions flag present' : profile.financial_risk_tier ? `Financial: ${profile.financial_risk_tier}` : undefined,
-              icon: 'mdi:alert-octagon-outline',
-            },
-            {
-              label: 'ESG',
-              value: profile.ecovadis_score != null ? `${profile.ecovadis_score} EcoVadis` : 'Not available',
-              sub: profile.sustainability_tier || undefined,
-              icon: 'mdi:leaf',
-            },
-          ].map((m) => (
-            <div key={m.label} className="rounded-lg p-3" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-              <div className="flex items-center gap-1.5 mb-1">
-                <Icon icon={m.icon} className="w-3.5 h-3.5" style={{ color: TEAL.base }} />
-                <span className="text-[10px] uppercase tracking-wide" style={{ color: COLORS.text.tertiary }}>{m.label}</span>
-              </div>
-              <p className="text-sm font-bold" style={{ color: m.value === 'Not available' ? COLORS.text.tertiary : COLORS.text.primary }}>{m.value}</p>
-              {m.sub && <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>{m.sub}</p>}
-            </div>
-          ))}
-        </div>
-
-        {/* 4. Clickable Active / Past Contracts cards */}
-        <div className="grid grid-cols-2 gap-3 max-w-md">
-          {[
-            { key: 'active' as const, label: 'Active Contracts', count: activeContracts.length, icon: 'mdi:file-check-outline' },
-            { key: 'past' as const, label: 'Past Contracts', count: pastContracts.length, icon: 'mdi:file-clock-outline' },
-          ].map((c) => (
-            <div
-              key={c.key}
-              onClick={() => !contractsLoading && setView({ kind: 'contracts', vendorId: profile.vendor_id, filter: c.key })}
-              className="rounded-lg p-3"
-              style={{
-                border: `1px solid ${TEAL.border}`,
-                backgroundColor: COLORS.white,
-                boxShadow: SHADOWS.card,
-                cursor: contractsLoading ? 'default' : 'pointer',
-              }}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ backgroundColor: TEAL.tint }}>
-                  <Icon icon={c.icon} className="w-4 h-4" style={{ color: TEAL.base }} />
-                </div>
-                <Icon icon="mdi:chevron-right" className="w-3.5 h-3.5" style={{ color: COLORS.text.tertiary }} />
-              </div>
-              <p className="text-xs mb-0.5" style={{ color: COLORS.text.secondary }}>{c.label}</p>
-              <p className="text-2xl font-bold" style={{ color: COLORS.text.primary }}>
-                {contractsLoading ? '…' : c.count}
-              </p>
-            </div>
-          ))}
-        </div>
-        {contractsError && <p className="text-xs mt-2" style={{ color: '#475569' }}>{contractsError}</p>}
-      </div>
-    );
-  }
-
-  // ============================================================
-  // 4. Filtered contract table (Active or Past)
-  // ============================================================
-  if (view.kind === 'contracts') {
-    const list = view.filter === 'active' ? activeContracts : pastContracts;
-    return (
-      <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
-        <button onClick={goBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>
-          <Icon icon="mdi:arrow-left" className="w-4 h-4" /> {backLabel}
-        </button>
-        <h1 className="text-xl font-bold mb-3" style={{ color: COLORS.text.primary }}>
-          {profile.vendor_name} — {view.filter === 'active' ? 'Active' : 'Past'} Contracts
-        </h1>
-        {contractsLoading ? (
-          <LoadingState height={360} message="Loading contracts…" variant="skeleton" size="md" />
-        ) : list.length === 0 ? (
-          <div className="rounded-xl p-6 text-center text-sm" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, color: COLORS.text.tertiary }}>
-            No {view.filter} contracts recorded for this vendor.
-          </div>
-        ) : (
-          <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                  {['Contract ID', 'Type', 'Material Group', 'Start', 'End', 'Value'].map((h) => (
-                    <th key={h} className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((c) => (
-                  <tr
-                    key={c.contract_id}
-                    onClick={() => setView({ kind: 'contractDetail', vendorId: profile.vendor_id, filter: view.filter, contractId: c.contract_id })}
-                    className="cursor-pointer transition-colors duration-150"
-                    style={{ borderTop: `1px solid ${COLORS.lightGray}` }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TEAL.tint)}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                  >
-                    <td className="px-3 py-1.5 font-semibold" style={{ color: COLORS.text.primary }}>{c.contract_id}</td>
-                    <td className="px-3 py-1.5" style={{ color: COLORS.text.secondary }}>{c.contract_type}</td>
-                    <td className="px-3 py-1.5" style={{ color: COLORS.text.secondary }}>{c.material_group}</td>
-                    <td className="px-3 py-1.5" style={{ color: COLORS.text.secondary }}>{formatDate(c.start_date)}</td>
-                    <td className="px-3 py-1.5" style={{ color: COLORS.text.secondary }}>{formatDate(c.end_date)}</td>
-                    <td className="px-3 py-1.5 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(c.total_contract_value)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ============================================================
-  // 5. Contract detail
-  // ============================================================
-  const contract = contracts.find((c) => c.contract_id === view.contractId) || null;
-  return (
-    <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
-      <button onClick={goBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>
-        <Icon icon="mdi:arrow-left" className="w-4 h-4" /> {backLabel}
-      </button>
-      <h1 className="text-xl font-bold mb-3" style={{ color: COLORS.text.primary }}>
-        Contract {view.contractId}
-      </h1>
-
-      {contract && (
-        <div
-          className="rounded-lg px-4 py-2.5 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5"
-          style={{ backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0' }}
-        >
-          {[
-            ['Vendor', profile.vendor_name],
-            ['Type', contract.contract_type],
-            ['Material Group', contract.material_group],
-            ['Start', formatDate(contract.start_date)],
-            ['End', formatDate(contract.end_date)],
-            ['Total Value', formatINR(contract.total_contract_value)],
-            ['Price Escalation', contract.price_escalation_clause ? `Yes (${contract.escalation_index || 'index not specified'})` : 'No'],
-          ].map(([label, value]) => (
-            <div key={label} className="flex items-baseline gap-1.5">
-              <span className="text-[10px] uppercase tracking-wide" style={{ color: '#15803D' }}>{label}</span>
-              <span className="text-xs font-semibold" style={{ color: '#14532D' }}>{value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
-        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-          <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Contracted Materials</h2>
-        </div>
-        {itemsLoading ? (
-          <LoadingState height={200} message="Loading contract items…" variant="skeleton" size="sm" />
-        ) : itemsError ? (
-          <p className="px-4 py-4 text-xs" style={{ color: '#475569' }}>{itemsError}</p>
-        ) : contractItems.length === 0 ? (
-          <p className="px-4 py-4 text-xs" style={{ color: COLORS.text.tertiary }}>No line items recorded for this contract.</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Material', 'Group', 'Contract Unit Price'].map((h) => (
-                  <th key={h} className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {contractItems.map((item) => (
-                <tr key={item.material_id} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                  <td className="px-3 py-1.5" style={{ color: COLORS.text.primary }}>
-                    {item.material_desc || item.material_id}
-                    <span className="ml-1.5 text-[11px]" style={{ color: COLORS.text.tertiary }}>{item.material_id}</span>
-                  </td>
-                  <td className="px-3 py-1.5" style={{ color: COLORS.text.secondary }}>{item.material_group}</td>
-                  <td className="px-3 py-1.5 font-medium" style={{ color: COLORS.text.primary }}>
-                    {formatINR(item.contract_unit_price)} / {item.unit_of_measure}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
-  );
+  return <VendorProfile vendorId={view.vendorId} SA_RUNTIME={SA_RUNTIME} onBack={() => setView({ kind: 'directory' })} backLabel="Back to Vendors" />;
 };
 
 (VendorsOnboardedHome as VendorsOnboardedHomeComponent).Metadata = METADATA;

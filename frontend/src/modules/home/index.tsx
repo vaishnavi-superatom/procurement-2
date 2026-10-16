@@ -46,7 +46,7 @@ const KPI_META: KpiMeta[] = [
   { label: 'RFQs received', icon: 'mdi:send-outline', iconColor: '#0EA5E9', iconBg: '#E0F2FE' },
   { label: 'Active Negotiations', icon: 'mdi:shield-outline', iconColor: TEAL.base, iconBg: TEAL.tint },
   { label: 'Approved RFQs', icon: 'mdi:hammer', iconColor: '#EA580C', iconBg: '#FFEDD5' },
-  { label: 'Vendors Onboarded', icon: 'mdi:file-document-edit-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
+  { label: 'Vendors', icon: 'mdi:storefront-outline', iconColor: '#16A34A', iconBg: '#DCFCE7' },
 ];
 
 const TOOL_ID = 'postgres-0fc80d2496ff_query';
@@ -235,7 +235,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
             'RFQs received': rfqRows,
             'Active Negotiations': negRows,
             'Approved RFQs': apprRows,
-            'Vendors Onboarded': vendorRows,
+            Vendors: vendorRows,
           });
         }
       } catch (err) {
@@ -319,7 +319,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
           const isPRCard = kpi.label === 'Total PRs Raised';
           const isRfqCard = kpi.label === 'RFQs received';
           const isNegotiationsCard = kpi.label === 'Active Negotiations';
-          const isVendorsCard = kpi.label === 'Vendors Onboarded';
+          const isVendorsCard = kpi.label === 'Vendors';
           const isApprovedRfqsCard = kpi.label === 'Approved RFQs';
           const isExpanded =
             (isPRCard && showPRList) ||
@@ -475,7 +475,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
         </div>
       )}
 
-      {/* Vendors Onboarded card → vendor directory, inline below, same screen */}
+      {/* Vendors card → vendor directory and profiles, inline below, same screen */}
       {showVendorsList && (
         <div className="mt-8">
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />

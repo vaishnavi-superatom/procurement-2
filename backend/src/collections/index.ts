@@ -38,6 +38,7 @@ import { registerCompositionGraphCollections } from './composition-graph';
 import { registerPrCommentsCollections } from './pr-comments';
 import { registerRfqWorkflowCollections } from './rfq-workflow';
 import { registerRfqVendorCommentsCollections } from './rfq-vendor-comments';
+import { registerVendorProfilesCollections } from './vendor-profiles';
 
 // Re-export types
 export type { CollectionContext, CollectionRegistrar } from './types';
@@ -110,6 +111,7 @@ export async function registerAllCollections(sdk: SuperatomSDK): Promise<void> {
 	await registerPrCommentsCollections(ctx);
 	await registerRfqWorkflowCollections(ctx);
 	await registerRfqVendorCommentsCollections(ctx);
+	await registerVendorProfilesCollections(ctx);
 
 	// Program-generated dashboards — kept apart from the JSON-DSL dashboard collections.
 	await registerDashboardBuilderCollections(ctx);
