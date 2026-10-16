@@ -41,8 +41,8 @@ importers:
         specifier: ^1.0.17
         version: 1.0.17
       '@superatomai/sdk-node':
-        specifier: 0.0.76-dsp
-        version: 0.0.76-dsp
+        specifier: 0.0.77-dsp
+        version: 0.0.77-dsp
       '@types/pg':
         specifier: ^8.15.6
         version: 8.16.0
@@ -980,8 +980,8 @@ packages:
     resolution: {integrity: sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A==}
     engines: {node: '>=14.0.0'}
 
-  '@superatomai/sdk-node@0.0.76-dsp':
-    resolution: {integrity: sha512-LuiVEwOeCNKYIt0rWHt+ENHiQtmpZbby0WZoXh2YVPyFfp62nC/Hi0L0nFnd5QKE7dDDHZQAfcb/ZX/jvzuadw==}
+  '@superatomai/sdk-node@0.0.77-dsp':
+    resolution: {integrity: sha512-DSo0Yn06rfv0auwoWzG9hQvNMxT4L4TjW0kPfiB0nmaZMo03ou7wHbBtQktNNE+N1DAFNlKaxtritzN09jzP/w==}
 
   '@tediousjs/connection-string@0.5.0':
     resolution: {integrity: sha512-7qSgZbincDDDFyRweCIEvZULFAw5iz/DeunhvuxpL31nfntX3P4Yd4HkHBRg9H8CdqY1e5WFN1PZIz/REL9MVQ==}
@@ -3520,7 +3520,7 @@ snapshots:
       '@smithy/util-buffer-from': 2.2.0
       tslib: 2.8.1
 
-  '@superatomai/sdk-node@0.0.76-dsp':
+  '@superatomai/sdk-node@0.0.77-dsp':
     dependencies:
       '@anthropic-ai/sdk': 0.66.0(zod@3.25.76)
       '@earendil-works/pi-coding-agent': 0.84.4(ws@8.21.1)(zod@3.25.76)
