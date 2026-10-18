@@ -9,6 +9,7 @@ import Negotiations from '../Negotiations';
 import VendorsOnboardedHome from '../VendorsOnboardedHome';
 import ApprovedRfqsHome from '../ApprovedRfqsHome';
 import RfqApprovalHome from '../RfqApprovalHome';
+import AwardDetails from '../AwardDetails';
 
 interface HomeProps {
   SA_RUNTIME?: any;
@@ -74,7 +75,13 @@ async function runCount(sql: string, params: Record<string, any>, SA_RUNTIME: an
 // row just to count them.
 function periodBounds(period: Period): { start: string; end: string } {
   const now = new Date();
-  const toISO = (d: Date) => d.toISOString().slice(0, 10);
+  // Build the 'YYYY-MM-DD' string from the Date's own local components —
+  // NOT via d.toISOString(), which converts to UTC and silently shifts the
+  // boundary back a day in any positive-UTC-offset timezone (e.g. IST),
+  // making these COUNT queries disagree with every table's local-time
+  // inTimeFilter by exactly one day. That was the actual source of the
+  // card-vs-table row-count mismatch, not the period-prop wiring itself.
+  const toISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   if (period === 'Today') {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const end = new Date(start);
@@ -127,6 +134,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
   const rfqBlockRef = useRef<HTMLDivElement>(null);
   const negotiationBlockRef = useRef<HTMLDivElement>(null);
   const approvalBlockRef = useRef<HTMLDivElement>(null);
+  const awardBlockRef = useRef<HTMLDivElement>(null);
 
   // Scenario 2: a PR's "Evaluate RFQ(s)" opens the RFQ experience focused on
   // its linked RFQ. focusToken forces RfqReceived to re-jump even if the same
@@ -198,6 +206,20 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
     }
   }, [approvalContext]);
 
+  // An Approved RFQs row opens this exact award's read-only details — never
+  // the RFQ evaluation screen, and never restarts negotiation or approval.
+  const [awardContext, setAwardContext] = useState<{ prId: string; rfqId: string } | null>(null);
+
+  const handleOpenAward = ({ prId, rfqId }: { prId: string; rfqId: string }) => {
+    setAwardContext({ prId, rfqId });
+  };
+
+  useEffect(() => {
+    if (awardContext) {
+      awardBlockRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [awardContext]);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -222,11 +244,30 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
         const { start, end } = periodBounds(period);
         const params = { start, end };
         const [prRows, rfqRows, negRows, apprRows, vendorRows] = await Promise.all([
-          runCount(`SELECT COUNT(DISTINCT pr_id) AS cnt FROM purchase_requisitions WHERE pr_date >= @start AND pr_date < @end;`, params, SA_RUNTIME),
+          // Grouped by pr_id with MIN(pr_date), exactly like PurchaseRequests'
+          // own PR_LIST_QUERY — so a PR whose lines don't all share one date
+          // still can't disagree with the table over which period it falls in.
+          runCount(
+            `SELECT COUNT(*) AS cnt FROM (SELECT pr_id, MIN(pr_date) AS pr_date FROM purchase_requisitions GROUP BY pr_id) t WHERE pr_date >= @start AND pr_date < @end;`,
+            params,
+            SA_RUNTIME
+          ),
           runCount(`SELECT COUNT(*) AS cnt FROM rfq_events WHERE rfq_date >= @start AND rfq_date < @end;`, params, SA_RUNTIME),
           runCount(`SELECT COUNT(*) AS cnt FROM rfq_events WHERE rfq_status = 'In Negotiation' AND rfq_date >= @start AND rfq_date < @end;`, params, SA_RUNTIME),
+          // Same shape as ApprovedRfqsHome's own APPROVED_RFQS_QUERY: an
+          // 'Awarded' RFQ only counts as approved once it has an actual
+          // purchase_orders row against it (purchase_orders.rfq_id) — being
+          // 'Awarded' alone just means a negotiation picked a winner, not
+          // that it was approved into a real purchase. The inner join is
+          // intentional here, not a bug: no PO means not approved, full stop.
           runCount(
-            `SELECT COUNT(DISTINCT rfq.rfq_id) AS cnt FROM rfq_events rfq JOIN quotations aq ON aq.rfq_id = rfq.rfq_id AND aq.is_awarded = true WHERE rfq.rfq_status = 'Awarded' AND aq.quote_date >= @start AND aq.quote_date < @end;`,
+            `SELECT COUNT(*) AS cnt FROM (
+               SELECT rfq.rfq_id, MIN(po.po_date) AS approved_po_date
+               FROM rfq_events rfq
+               JOIN purchase_orders po ON po.rfq_id = rfq.rfq_id
+               WHERE rfq.rfq_status = 'Awarded'
+               GROUP BY rfq.rfq_id
+             ) t WHERE approved_po_date >= @start AND approved_po_date < @end;`,
             params,
             SA_RUNTIME
           ),
@@ -499,7 +540,20 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
             className="mt-6 rounded-lg p-4"
             style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
           >
-            <ApprovedRfqsHome SA_RUNTIME={SA_RUNTIME} activePeriod={period} onOpenRfq={handleEvaluateRfq} />
+            <ApprovedRfqsHome SA_RUNTIME={SA_RUNTIME} activePeriod={period} onOpenRfq={handleOpenAward} />
+          </div>
+        </div>
+      )}
+
+      {/* An approved RFQ's row → its read-only award details, inline below, same screen */}
+      {awardContext && (
+        <div className="mt-8" ref={awardBlockRef}>
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <AwardDetails SA_RUNTIME={SA_RUNTIME} prId={awardContext.prId} rfqId={awardContext.rfqId} onBack={() => setAwardContext(null)} />
           </div>
         </div>
       )}

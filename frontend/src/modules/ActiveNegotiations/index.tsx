@@ -8,11 +8,13 @@ import { MarketStudyPanel } from './MarketStudy';
 import { AiRankBadge, LRankBadge, RecommendationCard, SelectSupplierList } from './SupplierSelection';
 import {
   aiRankByVendor,
+  getMarketSearch,
   getMarketStudy,
   getOnlinePrice,
   RANK_HELP,
   recommendSupplier,
   type MarketInputs,
+  type MarketSearch,
   type OnlinePrice,
   type SupplierRecommendation,
 } from '../../data/rfq-recommendation';
@@ -208,6 +210,9 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [marketError, setMarketError] = useState<string | null>(null);
   const [online, setOnline] = useState<OnlinePrice | null>(null);
   const [onlineLoading, setOnlineLoading] = useState(false);
+  // Prices and suppliers per market (card ③); runs alongside, the recommendation doesn't wait for it.
+  const [marketSearch, setMarketSearch] = useState<MarketSearch | null>(null);
+  const [marketSearchLoading, setMarketSearchLoading] = useState(false);
   const [rec, setRec] = useState<SupplierRecommendation | null>(null);
   const [recLoading, setRecLoading] = useState(false);
   const [recError, setRecError] = useState<string | null>(null);
@@ -224,6 +229,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     setMarketError(null);
     setOnline(null);
     setOnlineLoading(false);
+    setMarketSearch(null);
+    setMarketSearchLoading(false);
     setRec(null);
     setRecLoading(false);
     setRecError(null);
@@ -243,6 +250,14 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     setRecError(null);
     setRecLoading(true);
     setOnlineLoading(true);
+
+    // Prices and suppliers in each market: slower (about a minute), fills card ③ when done.
+    setMarketSearch(null);
+    setMarketSearchLoading(true);
+    getMarketSearch(rfqId, SA_RUNTIME, refresh)
+      .then((found) => current() && setMarketSearch(found))
+      .catch(() => current() && setMarketSearch({ available: false, profile: null, regions: [], summary: "Couldn't search the markets just now." }))
+      .finally(() => current() && setMarketSearchLoading(false));
 
     if (refresh) {
       setMarket(null);
@@ -305,9 +320,9 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         const [prRows, headerRows, quoteRows] = await Promise.all([
           runTool<PRLine>(
             `
-            SELECT pr.pr_id, pr.material_id, pr.requested_qty, pr.unit_of_measure, pr.estimated_price, pr.total_value,
+            SELECT pr.pr_id, pr.material_id, pr.requested_qty, pr.unit_of_measure, pr.total_value,
                    pr.required_date, pr.requester_dept, pr.plant_code, pr.urgency,
-                   m.material_desc, m.material_group, m.standard_price, m.primary_commodity, m.commodity_pct
+                   m.material_desc, m.material_group, m.primary_commodity, m.commodity_pct
             FROM purchase_requisitions pr
             LEFT JOIN material_master m ON m.material_id = pr.material_id
             WHERE pr.pr_id = @prId AND pr.material_id = @materialId
@@ -646,7 +661,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
           <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-            Technically accepted vendors by quoted price. T-rank and L-rank are separate.
+            Technically accepted vendors by quoted price. T-rank and L-rank are separate; the AI rank fills in after the System Recommendation.
           </p>
           {notAcceptedCount > 0 && (
             <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
@@ -740,6 +755,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             market={market}
             online={online}
             onlineLoading={onlineLoading}
+            marketSearch={marketSearch}
+            marketSearchLoading={marketSearchLoading}
             error={marketError}
             quotes={quotes.map((q) => ({ vendorId: q.vendor_id, price: q.quoted_price }))}
           />

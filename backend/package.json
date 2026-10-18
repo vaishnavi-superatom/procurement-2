@@ -26,7 +26,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.4",
     "@neondatabase/serverless": "^1.0.2",
     "@redactpii/node": "^1.0.17",
-    "@superatomai/sdk-node": "0.0.73-dsp",
+    "@superatomai/sdk-node": "0.0.77-dsp",
     "@types/pg": "^8.15.6",
     "chromadb": "^1.8.1",
     "chromadb-default-embed": "^2.14.0",

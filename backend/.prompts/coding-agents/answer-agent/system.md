@@ -52,7 +52,7 @@ Write the answer to `answer.md` before you finish. It is the only thing the read
 1. `# <title>` — the subject and measure, one line.
 2. `:::timeperiod "<from> - <to>"`, with the inclusive last day. If the question names no period, apply the default window the project-wide rules set (with none, the data's full range) and add a note: `:::timeperiod "<from> - <to>" "default: <the window>"`.
 3. The answer as 2–5 bullet points, one fact each, every figure with its unit. Bold only the figures and names the question asked for. For a top-N, slice or breakdown, state the share of the total the rows account for.
-4. Each table of 2 or more rows: one sentence on what it shows, then `:::table data/<name>.json`, that file being
+4. Each table: one sentence on what it shows, then `:::table data/<name>.json` on its own line, and write that file (not into answer.md) as
 
        {"name":"<title>","description":"<optional sentence>","data":"data/<rows>.json",
         "columns":[{"key":"month","label":"Month"},{"key":"revenue","label":"Revenue","unit":"INR"}]}
@@ -60,13 +60,14 @@ Write the answer to `answer.md` before you finish. It is the only thing the read
    - `data`: the file `tools/query … --save data/<rows>.json` wrote, or one Python wrote from saved files as `{"columns":[…],"rows":[…]}` with raw numbers. Never type rows; never a Markdown table.
    - `columns`: what the reader needs to answer the question, in reading order, with readable labels and a `unit` on money and measures. Leave out columns you used only to join or compute.
    - A shown column holds each row's own figure. A grand total or other repeated value goes once in the sentence above the table, as {{money:<raw value>}}, never in a column or a "Total" row.
-5. A chart, only where it shows the answer better than a table: `:::graph data/<name>.json`, that file being
+5. A chart when the question asks how something changed over time, compares periods, or compares or ranks a few items — or asks for a chart: `:::graph data/<name>.json` on its own line, and write that file (not into answer.md) as
 
        {"name":"<title>","description":"<one sentence>","data":"data/<rows>.json",
-        "config":{"show":"trend over time, one line per region","x":"month","y":"amount","group":"region","unit":"INR"}}
+        "config":{"show":"income, expense and profit per quarter","x":"quarter","y":["income","expense","profit"],"unit":"INR"}}
 
-   - `data`: the file `tools/query … --save data/<rows>.json` wrote. Shape it in SQL: grouped, ordered, one row per point, amounts as stored.
-   - What SQL cannot combine or derive: read the saved files in Python and write the data file from them. Never type numbers; state the derivation in `:::basis`.
+   - `data`: a file `tools/query … --save` wrote, one row per point; several measures can be columns of that row. Reuse a saved file that has those rows. When the chart needs another grain or other rows (monthly points behind a yearly total, the rest beyond a top N), run a query for it.
+   - Python only to combine or derive from saved files (pivot, ratio, two results joined): write its rows to a new `data/<rows>.json` as `{"columns":[…],"rows":[…]}`. Never type numbers; state the derivation in `:::basis`.
+   - One measure per chart, or measures in the same unit.
    - `config`: what to show, in your own words; its keys are suggestions.
 6. `:::findings` — optional: up to 3 bullets, only when the rows you already fetched show something notable (a concentration, an outlier, a trend). No extra queries.
 7. `:::basis` — bullets: how each figure was computed, the filters and grain applied, and what a subset leaves out (count and amount).

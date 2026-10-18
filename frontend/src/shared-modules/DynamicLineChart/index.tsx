@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import ReactECharts, { type EChartsOption } from 'echarts-for-react';
 import LoadingState from '../../components/LoadingState';
@@ -298,7 +297,6 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
   // Fullscreen state
   const [isHovered, setIsHovered] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [showPortal, setShowPortal] = useState<boolean>(false);
   const [isMobile, setIsMobile] = useState<boolean>(false);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState<boolean>(false);
   const [isTitleExpanded, setIsTitleExpanded] = useState<boolean>(false);
@@ -339,7 +337,6 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
   const displayTimeFrame = timeFrame ? interpolate(timeFrame, filterLabels) : '';
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  const portalContainerRef = useRef<HTMLDivElement>(null);
   const chartAreaRef = useRef<HTMLDivElement>(null);
   const [chartDims, setChartDims] = useState<{ w: number; h: number } | null>(null);
   // ResizeObserver to get exact pixel dimensions for ECharts
@@ -538,41 +535,39 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
 
   // Track fullscreen state changes
   useEffect(() => {
+    const d = document as any;
     const handleFullscreenChange = () => {
-      const isCurrentlyFullscreen = Boolean(document.fullscreenElement);
-      setIsFullscreen(isCurrentlyFullscreen);
-      if (!isCurrentlyFullscreen && showPortal) {
-        setShowPortal(false);
-      }
+      setIsFullscreen(
+        Boolean(d.fullscreenElement || d.webkitFullscreenElement || d.msFullscreenElement)
+      );
     };
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [showPortal]);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
 
-  // Enter fullscreen via portal
   const enterFullscreen = () => {
-    setShowPortal(true);
+    const elem = chartContainerRef.current as any;
+    if (!elem) return;
+    const request =
+      elem.requestFullscreen || elem.webkitRequestFullscreen || elem.msRequestFullscreen;
+    /* Rejects when the browser does not trust the gesture, or in an iframe
+       without `allowfullscreen`. Nothing to do but stay as we are — the chart
+       is still on screen and still readable. */
+    if (request) Promise.resolve(request.call(elem)).catch(() => {});
   };
 
-  // Request fullscreen on portal after it renders
-  useEffect(() => {
-    if (showPortal && portalContainerRef.current && !isFullscreen) {
-      const timer = setTimeout(() => {
-        portalContainerRef.current?.requestFullscreen().catch((err) => {
-          console.error('Failed to enter fullscreen:', err);
-          setShowPortal(false);
-        });
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [showPortal, isFullscreen]);
-
-  // Exit fullscreen
   const exitFullscreen = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    }
+    const d = document as any;
+    if (!(d.fullscreenElement || d.webkitFullscreenElement || d.msFullscreenElement)) return;
+    const exit = d.exitFullscreen || d.webkitExitFullscreen || d.msExitFullscreen;
+    if (exit) Promise.resolve(exit.call(d)).catch(() => {});
   };
 
   const fetchData = async () => {
@@ -1183,18 +1178,16 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
   };
 
   // Chart content component - renders the actual chart UI
-  const renderChartContent = (inPortal: boolean = false) => (
+  /* The chart. One of them — this is the element that goes fullscreen, rather
+     than a copy of it being rendered somewhere else to be fullscreened. */
+  const renderChartContent = () => (
     <div
-      ref={inPortal ? portalContainerRef : chartContainerRef}
-      className={`card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow duration-200 relative overflow-hidden ${
-        inPortal ? 'w-full h-full' : ''
-      }`}
-      style={inPortal ? {
-        display: 'flex',
-        flexDirection: 'column',
-        maxWidth: '100vw',
-        maxHeight: '100vh'
-      } : {
+      ref={chartContainerRef}
+      className="card bg-base-100 shadow-sm border border-base-300 hover:shadow-md transition-shadow duration-200 relative overflow-hidden"
+      /* `height: 100%` covers both cases. In place it fills whatever panel the
+         dashboard gave it; fullscreen, the browser's own `:fullscreen` rule
+         makes this element the size of the screen, so 100% is the screen. */
+      style={{
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
@@ -1221,7 +1214,7 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
       )}
 
       {/* Fullscreen button - shows on hover (enter) or when in fullscreen (exit) */}
-      {(isHovered || isFullscreen || inPortal) && (
+      {(isHovered || isFullscreen) && (
         <button
           onClick={isFullscreen ? exitFullscreen : enterFullscreen}
           className="absolute top-2 right-1 z-10"
@@ -1259,16 +1252,12 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
         </div>
 
         {/* Chart */}
-        <div ref={inPortal ? undefined : chartAreaRef} style={{ height: inPortal ? 'calc(100vh - 200px)' : undefined, width: '100%', flex: inPortal ? undefined : '1 1 0', minHeight: 0 }}>
-          {inPortal ? (
-            <ReactECharts
-              option={option}
-              onEvents={onEvents}
-              style={{ height: '100%', width: '100%' }}
-              opts={{ renderer: 'svg' }}
-              notMerge={true}
-            />
-          ) : chartDims && (
+        {/* One branch now. The measured path works fullscreen too: the
+            ResizeObserver above watches this element, and going fullscreen
+            resizes it like any other layout change — so ECharts is handed the
+            new pixel size without this having to know why it changed. */}
+        <div ref={chartAreaRef} style={{ width: '100%', flex: '1 1 0', minHeight: 0 }}>
+          {chartDims && (
             <ReactECharts
               option={option}
               onEvents={onEvents}
@@ -1283,23 +1272,9 @@ const DynamicLineChart: React.FC<DynamicLineChartProps> = ({
     </div>
   );
 
-  return (
-    <>
-      {/* Normal rendering in place */}
-      {renderChartContent(false)}
-
-      {/* Portal rendering for fullscreen - renders at document.body level */}
-      {showPortal && createPortal(
-        <div
-          className="fixed inset-0 bg-base-100 z-[9999]"
-          style={{ isolation: 'isolate' }}
-        >
-          {renderChartContent(true)}
-        </div>,
-        document.body
-      )}
-    </>
-  );
+  /* One chart, rendered where it belongs. Fullscreen is the browser taking
+     this element to the screen — not a second copy of it somewhere else. */
+  return renderChartContent();
 };
 
 // Attach metadata to component

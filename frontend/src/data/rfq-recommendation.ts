@@ -25,16 +25,68 @@ export interface RankedVendor {
   technicalNote: string | null;
 }
 
+export interface PastSupplier {
+  vendorId: string;
+  vendorName: string;
+  orders: number;
+  lastPrice: number;
+  lastDate: string;
+  minPrice: number;
+  maxPrice: number;
+}
+
 export interface HistoricalPrice {
   available: boolean;
   unit: string;
   lastPrice: number | null;
   lastDate: string | null;
   avg12m: number | null;
+  min12m?: number | null;
+  max12m?: number | null;
+  /** The whole history, for materials with no order in the last 12 months. */
+  minAll?: number | null;
+  maxAll?: number | null;
+  avgAll?: number | null;
+  firstDate?: string | null;
+  /** Who we bought it from, latest first. */
+  pastSuppliers?: PastSupplier[];
   orders12m: number;
+  totalOrders?: number;
   trend3mPct: number | null;
   series?: { month: string; avgPrice: number; orders: number }[];
   summary: string;
+}
+
+/** One priced listing found in a market, exactly as listed (own currency, before freight and duty). */
+export interface MarketListing {
+  source: string;
+  title: string;
+  price: number;
+  currency: string;
+  unit: string;
+  meetsSpecs: 'yes' | 'nearly' | 'no' | 'unknown';
+  url: string;
+  /** INR listings only: far away from the quotes, so probably another spec or basis. */
+  outOfRange?: boolean;
+}
+
+export interface MarketRegionResult {
+  region: string;
+  sites: string[];
+  listings: MarketListing[];
+  suppliers: { name: string; country: string; website: string | null }[];
+  note: string | null;
+  failed?: boolean;
+}
+
+/** Prices and suppliers per market (engineering: India, China, Europe, US; raw materials: India, Indonesia, Australia, South Africa). */
+export interface MarketSearch {
+  available: boolean;
+  pending?: boolean;
+  profile: string | null;
+  regions: MarketRegionResult[];
+  summary: string;
+  cached?: boolean;
 }
 
 export interface CommodityFeed {
@@ -103,6 +155,12 @@ export interface MarketStudy {
   market: MarketInputs;
 }
 
+/** One headed point of the reason: Pricing, Technical, Delivery or Risk. */
+export interface RecommendationPoint {
+  heading: string;
+  text: string;
+}
+
 export interface SupplierRecommendation {
   data: RankedVendor[];
   unit: string;
@@ -110,7 +168,10 @@ export interface SupplierRecommendation {
   recommendedVendor: string | null;
   /** e.g. "L1, T2" */
   combinedRank: string | null;
+  /** One sentence on why (the award review and approval pages show it). */
   rationale: string | null;
+  /** The reason as four headed points, shown on the card; empty when no supplier can be recommended. */
+  points?: RecommendationPoint[];
   considerations: string[];
   /** 'ai', or the plain score when the model was unavailable. */
   recommendationSource: string;
@@ -168,6 +229,10 @@ export const getMarketStudy = (rfqId: string, SA_RUNTIME: unknown): Promise<Mark
 /** Searches the web for the material's current price (~15–30 s; cached for the day). */
 export const getOnlinePrice = (rfqId: string, SA_RUNTIME: unknown): Promise<OnlinePrice> =>
   runDirectTool('get-rfq-online-price', 'Get RFQ Online Market Price', { rfqId }, SA_RUNTIME);
+
+/** Prices and suppliers in several markets (~30–90 s; cached for the day). */
+export const getMarketSearch = (rfqId: string, SA_RUNTIME: unknown, refresh = false): Promise<MarketSearch> =>
+  runDirectTool('get-rfq-market-search', 'Get RFQ Market Prices by Region', { rfqId, ...(refresh ? { refresh: true } : {}) }, SA_RUNTIME);
 
 /** Picks one supplier with the reason. `refresh` runs a fresh study, web search included. */
 export const recommendSupplier = (rfqId: string, SA_RUNTIME: unknown, refresh = false): Promise<SupplierRecommendation> =>

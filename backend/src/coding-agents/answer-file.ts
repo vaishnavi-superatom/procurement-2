@@ -282,6 +282,21 @@ export async function assembleAnswerFile(
 		const readable = (line: string) => [BLOCK_DIRECTIVE, TIME_DIRECTIVE, SECTION_DIRECTIVE].some(re => new RegExp(`^(?:${re.source})$`).test(line));
 		markdown = markdown.replace(/^:::.*$/gm, line => readable(line) ? line : '');
 	}
+	// A table or graph spec written inline on the line after its directive, instead of in its own file,
+	// would reach the reader as raw JSON and leave the directive pointing at the bare data file. Move it
+	// into a spec file and point the directive at that.
+	let inlineSpecs = 0;
+	markdown = markdown.replace(/^(:::(table|graph)[ \t]+)(data\/[A-Za-z0-9][A-Za-z0-9._-]*\.json)([^\r\n]*)\r?\n[ \t]*(\{[^\r\n]*\})[ \t]*$/gm,
+		(all, head: string, kind: string, _file: string, tail: string, json: string) => {
+			try {
+				const spec = JSON.parse(json);
+				if (!spec || typeof spec.data !== 'string') return all;
+				const rel = `data/${kind}_spec_${++inlineSpecs}.json`;
+				fs.mkdirSync(path.join(workspaceDir, 'data'), { recursive: true });
+				fs.writeFileSync(path.join(workspaceDir, rel), json);
+				return `${head}${rel}${tail}`;
+			} catch { return all; }
+		});
 	// Rows typed into a Markdown table are numbers no query saved: rejected, so the recovery turn cites a data file.
 	if (!lenient && MARKDOWN_TABLE.test(markdown)) {
 		throw new Error('answer.md contains a Markdown table; save its rows with tools/query --save and cite them with :::table');

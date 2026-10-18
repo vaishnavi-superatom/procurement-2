@@ -95,16 +95,15 @@ const DASHBOARD_NOTE = '.dashboard-note';
 const ATTACHMENTS_NOTE = '.attachments-note';
 
 /**
- * Set when this turn's composition replaced a previous one, and read by
- * buildPrompt.
- *
- * The SDK decides `resumeId` from `_state.json` BEFORE prepare() runs, so
- * deleting that file here cannot restart the session for this turn — only the
- * next one. This turn therefore runs in a session whose context still holds the
- * PREVIOUS domain's instructions while the new one is already on disk, so the turn
- * prompt has to say "re-read it".
+ * Set when this turn's composition replaced a previous one (another domain, or an admin edit).
+ * prepare() then ends the codex session, so the turn starts fresh on the new instructions and
+ * buildPrompt carries the chat's last few questions instead of the old domain's whole context.
  */
 const SWITCH_MARKER = '.graph-switched';
+/** The thread's last questions and their answers' titles, for the note a fresh session gets. */
+const RECENT_QUESTIONS = '.recent-questions.json';
+const EARLIER_NOTE = '.earlier-note';
+const RECENT_KEPT = 3;
 
 /** The domain holding the parts every other domain gets. */
 const SHARED_DOMAIN = 'shared';
@@ -191,6 +190,12 @@ export interface AnswerAttachment {
 	title?: string;
 }
 
+/** The body of system.md's "## Write answer.md" section, up to the next `## ` heading. */
+export function answerLayout(instructions: string): string {
+	const m = /^##[ \t]+Write\b[^\n]*answer\.md[^\n]*\n([\s\S]*?)(?=^##[ \t]|(?![\s\S]))/m.exec(instructions);
+	return m ? m[1].trim() : '';
+}
+
 /**
  * Route the question to a domain and lay its knowledge into the workspace.
  *
@@ -246,12 +251,10 @@ async function composeDomain(ws: Workspace, question: string, access: BridgeAcce
 
 		await ws.write(INSTRUCTIONS_FILE, `${basePrompt(access)}\n\n${comp.prompt}\n`);
 
-		// A live codex session was given the OLD instructions and cannot be told
-		// they changed, so a different composition has to start a new session.
-		// Deleting the state makes the NEXT turn start clean; the marker makes THIS
-		// turn re-read the file it was not given. A first turn has no stale session
-		// to correct, so it gets neither.
-		if (replaced) {
+		// A changed composition starts a new codex session: the old one would carry the previous
+		// instructions and results into every call. The SDK reads _state.json after prepare(), so
+		// this turn already starts fresh. A recovery turn keeps its session: it holds the results.
+		if (replaced && !opts.recovery) {
 			if (hadDomain) fs.writeFileSync(ws.pathTo(SWITCH_MARKER), decision.domainName);
 			fs.rmSync(ws.pathTo('_state.json'), { force: true });
 		}
@@ -362,6 +365,19 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 		// system.md fallback: a thread created before the rename would otherwise
 		// keep reading the instructions it was composed with weeks ago.
 		// A recovery turn keeps them: its answer is built from the files this question already wrote.
+		// What this chat asked last, kept for a fresh session's note (answer.md is cleared below).
+		if (!input.recovery) {
+			let recent: Array<{ question: string; title?: string }> = [];
+			try { recent = JSON.parse(fs.readFileSync(ws.pathTo(RECENT_QUESTIONS), 'utf-8')); } catch { /* first question */ }
+			const last = recent[recent.length - 1];
+			if (last && !last.title) {
+				try { last.title = /^#\s+(.+)$/m.exec(fs.readFileSync(ws.pathTo('answer.md'), 'utf-8'))?.[1]?.trim(); } catch { /* no answer written */ }
+			}
+			fs.writeFileSync(ws.pathTo(EARLIER_NOTE), recent
+				.map(r => `- "${r.question}"${r.title ? ` — answered as "${r.title}"` : ''}`).join('\n'));
+			recent.push({ question: input.question ?? '' });
+			fs.writeFileSync(ws.pathTo(RECENT_QUESTIONS), JSON.stringify(recent.slice(-RECENT_KEPT)));
+		}
 		if (!input.recovery) for (const stale of ['input', 'AGENTS.md', 'out/answer.json', 'answer.md', 'data', '.query-results', 'sql']) {
 			fs.rmSync(ws.pathTo(stale), { force: true, recursive: ['data', 'input', '.query-results', 'sql'].includes(stale) });
 		}
@@ -428,20 +444,14 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 			}
 		} catch { /* no routing: nothing to assert */ }
 
-		// The answer format lives only in system.md (the published "Write answer.md" part), so an
-		// edit in the admin UI is the whole contract; a slip is caught by the recovery turn.
-		// Only when the composition actually changed under a live session: a normal
-		// follow-up already has the right instructions and must not be sent reading.
+		// A fresh session (the composition changed) knows nothing of this chat: say what it asked last.
 		let handover = '';
 		try {
 			const marker = ws.pathTo(SWITCH_MARKER);
 			if (fs.existsSync(marker)) {
-				const to = fs.readFileSync(marker, 'utf-8').trim();
 				fs.rmSync(marker, { force: true });
-				handover = `This question is about a different area, so your instructions were replaced: `
-					+ `run \`cat system.md\` and work from that${to ? ` (domain: ${to})` : ''}. `
-					+ 'Anything you remember from earlier in this conversation about which tables, keys or '
-					+ 'definitions to use no longer applies.\n\n';
+				const earlier = fs.readFileSync(ws.pathTo(EARLIER_NOTE), 'utf-8').trim();
+				if (earlier) handover = `Earlier in this chat the person asked:\n${earlier}\nUse them only if this question refers to them.\n\n`;
 			}
 		} catch { /* no marker: ordinary turn */ }
 
@@ -459,8 +469,16 @@ export const answerAgent: CodingAgentDefinition<AnswerAgentInput> = {
 			if (note) files = `${note}\n\n---\n\n`;
 		} catch { /* no files with this question */ }
 
+		// The layout goes last on every question: read once at the top of a long session it was
+		// dropped, most often on follow-ups. Read from system.md, so the admin's latest edit applies.
+		let layout = '';
+		try { layout = answerLayout(fs.readFileSync(ws.pathTo(INSTRUCTIONS_FILE), 'utf-8')); } catch { /* none */ }
+		const answerMd = ws.pathTo('answer.md');
 		const prompt = `${domain}${handover}${dashboard}${files}${input.question ?? ''}\n\n`
-			+ `Before finishing, write ${ws.pathTo('answer.md')} as your instructions (system.md) describe.`;
+			+ (layout
+				? `---\n\nBefore finishing, write ${answerMd}. When your answer shows figures, use this layout:\n\n${layout}\n\n`
+					+ 'Otherwise (a clarifying question, or the details of one record), answer as the question needs.'
+				: `Before finishing, write ${answerMd} as your instructions (system.md) describe.`);
 		console.log(`[answer-agent] prompt for ${input.threadId ?? '-'}:\n${prompt}\n[answer-agent] end of prompt`);
 		return prompt;
 	},

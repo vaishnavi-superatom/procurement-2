@@ -16,6 +16,7 @@ import RfqReceived from './modules/RfqReceived';
 import ActiveNegotiations from './modules/ActiveNegotiations';
 import ApprovedRfqsHome from './modules/ApprovedRfqsHome';
 import RfqApprovalHome from './modules/RfqApprovalHome';
+import AwardDetails from './modules/AwardDetails';
 // import CatalogClassification from './modules/CatalogClassification'; // removed from sidebar for now
 import InventoryCapital from './modules/InventoryCapital';
 import Negotiations from './modules/Negotiations';
@@ -81,6 +82,7 @@ const COMPONENTS = {
     ActiveNegotiations, // opened from an RFQ's "Start Negotiation" button — no dashboard route
     ApprovedRfqsHome,  // embedded in Home via the "Approved RFQs" card — no dashboard route
     RfqApprovalHome,   // opened from a negotiation's "Proceed to Approval" button — no dashboard route
+    AwardDetails,      // opened from a row in the Approved RFQs list — read-only, no dashboard route
     VendorsOnboardedHome, // embedded in Home via the "Vendors" card — no dashboard route
     // CatalogClassification, // → /dash/CatalogClassification — removed from sidebar for now
     InventoryCapital,  // → /dash/InventoryCapital
