@@ -124,9 +124,9 @@ interface CommodityPriceRow {
 // ============================================================
 
 //local-tool id
-//const TOOL_ID = 'postgres-6a0f22831b3f_query';
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
 //prod-tool id
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -868,13 +868,6 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         )}
       </div>
 
-      {/* Delivery discipline and sustainability for the same vendors; reading only, ranks untouched. */}
-      {quotes.length > 0 && (
-        <SupplierPerformance
-          suppliers={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank }))}
-          runQuery={(sql, params) => runTool(sql, params, SA_RUNTIME)}
-        />
-      )}
 
         {/* "Market Analysis" (review, 18 Oct), a plain button with no box or text (review, 19 Oct): it runs
             the market study, which opens as a new box below; the recommendation runs in the background. */}
@@ -904,7 +897,16 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             error={marketError}
             quotes={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank, price: Number(q.quoted_price) }))}
             productName={prLine.material_desc || prLine.material_id}
-          />
+          >
+            {/* Delivery discipline and sustainability, at the bottom of the study; reading only, ranks untouched. */}
+            {quotes.length > 0 && (
+              <SupplierPerformance
+                embedded
+                suppliers={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank }))}
+                runQuery={(sql, params) => runTool(sql, params, SA_RUNTIME)}
+              />
+            )}
+          </MarketStudyPanel>
         </NewStep>
       )}
 

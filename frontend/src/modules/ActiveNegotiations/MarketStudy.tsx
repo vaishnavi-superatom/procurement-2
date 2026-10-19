@@ -1021,16 +1021,20 @@ const CommodityMarketCard: React.FC<{ data: MarketBenchmark | undefined; loading
                 {data.comparability.label}
               </span>
             )}
+            {fresh && (
+              <span className="px-1.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: fresh.bg, color: fresh.fg }} title={`${l.freshness.daysOld} days after the period`}>
+                {fresh.label} data
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <Figure strong label={`Latest · ${l.periodLabel ?? l.observationDate}`} value={`${l.currency} ${l.price}`} unit={l.unit} />
-            {l.priceInrPerMt != null && <Figure label="In rupees" value={formatINR(l.priceInrPerMt)} unit="MT" sub={l.fxBasis ?? undefined} />}
+            {l.priceInrPerMt != null && (
+              <Figure label="In rupees" value={formatINR(l.priceInrPerMt)} unit="MT" sub={l.fxInrPerUnit != null ? `at ₹${l.fxInrPerUnit.toFixed(2)} per ${l.currency}` : undefined} />
+            )}
             {(data.movements ?? []).map((m) => (
               <Figure key={m.label} label={`${m.label} change`} value={signedPct(m.changePct)} sub={m.from ? `${m.from.slice(0, 7)} → ${m.to.slice(0, 7)}` : 'not enough history'} />
             ))}
-            {fresh && (
-              <Figure label="Freshness" value={fresh.label} sub={`${l.freshness.daysOld} days after the period`} />
-            )}
           </div>
           <p className="text-[11px] leading-snug" style={{ color: COLORS.text.secondary }}>
             {b.specification}{b.deliveryBasis ? ` · ${b.deliveryBasis}` : ''}
@@ -1039,14 +1043,16 @@ const CommodityMarketCard: React.FC<{ data: MarketBenchmark | undefined; loading
             Source: {b.datasetVersion ?? b.provider} ·{' '}
             <a href={b.sourceUrl} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: TEAL.base }}>{hostOf(b.sourceUrl)}</a>
             {' '}· {b.frequency} observations (monthly averages are not daily prices)
+            {l.fxBasis ? ` · FX: ${l.fxBasis}` : ''}
           </p>
 
           {/* B. History */}
           {option && (
             <div role="img" aria-label={`${b.name}, ${b.frequency} history`}>
-              <ReactECharts option={option} notMerge opts={{ renderer: 'svg' }} style={{ height: 170, width: '100%' }} />
+              <ReactECharts key={`${b.id}-${history.length}-${l.observationDate}`} option={option} notMerge opts={{ renderer: 'svg' }} style={{ height: 180, width: '100%' }} />
             </div>
           )}
+          {!option && <Unavailable text="Not enough observations yet to draw the history." />}
 
           {/* C. Each quote against the benchmark for the RFQ's month */}
           {(data.suppliers ?? []).length > 0 && (
@@ -1169,7 +1175,9 @@ export const MarketStudyPanel: React.FC<{
   quotes: QuoteRef[];
   /** The product the should cost is for (one per product, not per supplier). */
   productName?: string;
-}> = ({ market, online, onlineLoading, marketSearch, marketSearchLoading, benchmarkLoading = false, error, quotes, productName }) => {
+  /** Shown below the cards, full width (Supplier Performance). */
+  children?: React.ReactNode;
+}> = ({ market, online, onlineLoading, marketSearch, marketSearchLoading, benchmarkLoading = false, error, quotes, productName, children }) => {
   // Open once shown: the cards are what the buyer reads (meeting, 18 Oct).
   const [expanded, setExpanded] = useState(true);
   const vendorIds = quotes.map((q) => q.vendorId);
@@ -1219,7 +1227,7 @@ export const MarketStudyPanel: React.FC<{
               quotes={quotes}
               unit={market?.historical?.unit}
             />
-
+            {children && <div className="lg:col-span-2 min-w-0">{children}</div>}
           </div>
         ))}
     </div>

@@ -68,7 +68,7 @@ const Muted: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <span style={{ color: COLORS.text.tertiary }}>{children}</span>
 );
 
-export const SupplierPerformance: React.FC<{ suppliers: PerformanceSupplier[]; runQuery: RunQuery }> = ({ suppliers, runQuery }) => {
+export const SupplierPerformance: React.FC<{ suppliers: PerformanceSupplier[]; runQuery: RunQuery; embedded?: boolean }> = ({ suppliers, runQuery, embedded = false }) => {
   const [delivery, setDelivery] = useState<Record<string, DeliveryRow>>({});
   const [scorecard, setScorecard] = useState<Record<string, ScorecardRow>>({});
   const [loading, setLoading] = useState(true);
@@ -122,7 +122,10 @@ export const SupplierPerformance: React.FC<{ suppliers: PerformanceSupplier[]; r
   }, [idKey]);
 
   return (
-    <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
+    <div
+      className={embedded ? 'rounded-lg overflow-hidden' : 'rounded-xl overflow-hidden mb-4'}
+      style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, ...(embedded ? {} : { boxShadow: SHADOWS.card }) }}
+    >
       <div className="px-4 py-3 flex items-start justify-between gap-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
         <div>
           <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Performance</h2>

@@ -18,9 +18,9 @@ import { createRfqRecommendationTools } from './rfq-recommendation';
  * source manager that the tool loader is loaded from.
  */
 //local-source id
-//export const sourceId = 'postgres-6a0f22831b3f';
+export const sourceId = 'postgres-6a0f22831b3f';
 //prod-source id
-export const sourceId = 'postgres-0fc80d2496ff';
+//export const sourceId = 'postgres-0fc80d2496ff';
 
 /** Aggregate every tool factory in this project into one SourceTool[]. */
 export function createTools(execute: ExecuteFn): SourceTool[] {
