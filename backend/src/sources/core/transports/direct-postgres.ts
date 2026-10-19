@@ -66,11 +66,14 @@ export class DirectPostgresTransport implements SourceTransport {
     // as an array. Object-shape params are ignored here.
     const values = Array.isArray(params) ? params : undefined;
 
-    // Retry once on connection errors (pool may have stale connections after idle)
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const pool = await this.getPool();
+    // Retry once on connection errors (pool may have stale connections after idle), and up to three
+    // times, with a pause, when the host name doesn't resolve: a flaky local DNS server, and nothing
+    // has reached the database yet. Opening the pool is inside the try, as it can hit that too.
+    for (let attempt = 1; ; attempt++) {
+      let pool: pg.Pool | null = null;
       const startedAt = Date.now();
       try {
+        pool = await this.getPool();
         const result = values && values.length > 0
           ? await pool.query(sql, values)
           : await pool.query(sql);
@@ -81,11 +84,15 @@ export class DirectPostgresTransport implements SourceTransport {
           executionTimeMs: Date.now() - startedAt,
         };
       } catch (error: any) {
-        const isConnErr = this.isConnectionError(error);
-        if (isConnErr && attempt === 1) {
-          console.warn(`[DirectPostgres:${this.tag}] Connection error, resetting pool and retrying:`, error.message || error.code);
-          // Only the pool this query used: a concurrent request may already have replaced it.
-          await this.resetPool(pool);
+        const lookupFailed = this.isLookupError(error);
+        if (lookupFailed ? attempt <= 3 : this.isConnectionError(error) && attempt === 1) {
+          console.warn(`[DirectPostgres:${this.tag}] ${lookupFailed ? 'Host lookup failed' : 'Connection error, resetting pool'}, retrying:`, error.message || error.code);
+          if (lookupFailed) {
+            await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+          } else if (pool) {
+            // Only the pool this query used: a concurrent request may already have replaced it.
+            await this.resetPool(pool);
+          }
           continue;
         }
         const msg = error.message || 'Unknown database error';
@@ -94,7 +101,11 @@ export class DirectPostgresTransport implements SourceTransport {
         throw new Error(`Database query failed: ${msg}${detail}${code}`);
       }
     }
-    throw new Error('Database query failed: unexpected execution path');
+  }
+
+  /** The host name didn't resolve, so nothing reached the database: safe to try again. */
+  private isLookupError(error: any): boolean {
+    return error?.code === 'ENOTFOUND' || error?.code === 'EAI_AGAIN' || /getaddrinfo/i.test(error?.message ?? '');
   }
 
   async listTables(): Promise<TransportTable[]> {

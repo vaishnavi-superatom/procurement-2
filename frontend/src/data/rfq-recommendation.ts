@@ -54,6 +54,23 @@ export interface HistoricalPrice {
   totalOrders?: number;
   trend3mPct: number | null;
   series?: { month: string; avgPrice: number; orders: number }[];
+  /** Every order, oldest first (latest 240), for the chart. */
+  orders?: { date: string; price: number; vendorName: string }[];
+  /** The RFQ's date: where its quotes sit on the chart. */
+  rfqDate?: string;
+  summary: string;
+}
+
+/** What the item should cost to make, per material (entered from Ashish's figures). */
+export interface ShouldCost {
+  available: boolean;
+  shouldCost?: number;
+  unit?: string;
+  /** e.g. bill of materials, manpower, IP. */
+  breakdown?: { label: string; amount: number }[];
+  basis?: string | null;
+  source?: string | null;
+  updatedAt?: string | null;
   summary: string;
 }
 
@@ -68,6 +85,24 @@ export interface MarketListing {
   url: string;
   /** INR listings only: far away from the quotes, so probably another spec or basis. */
   outOfRange?: boolean;
+  /** The price in rupees (at the day's ECB rate for foreign listings). */
+  priceInr?: number;
+}
+
+/** The listing used as the market price when India's reference search finds none: meets the specs, India first. */
+export interface BestListing {
+  region: string;
+  source: string;
+  title: string;
+  url: string;
+  unit: string;
+  /** As listed, in its own currency. */
+  price: number;
+  currency: string;
+  priceInr: number;
+  /** Rupees per unit of the listing's currency, and the rate's date; null for INR. */
+  rate: number | null;
+  rateDate: string | null;
 }
 
 export interface MarketRegionResult {
@@ -87,6 +122,7 @@ export interface MarketSearch {
   regions: MarketRegionResult[];
   summary: string;
   cached?: boolean;
+  bestListing?: BestListing | null;
 }
 
 export interface CommodityFeed {
@@ -121,6 +157,10 @@ export interface OnlinePrice {
   noPriceReason?: string | null;
   sources?: { title: string; url: string }[];
   cached?: boolean;
+  /** Set when India's reference search found no price and a market listing stands in. */
+  fromListing?: BestListing;
+  /** With `fromListing`: why India's reference search found no price. */
+  referenceReason?: string | null;
   summary: string;
 }
 
@@ -142,6 +182,8 @@ export interface ContractBenchmark {
 }
 
 export interface MarketInputs {
+  /** Missing in recommendations saved before 18 Oct. */
+  shouldCost?: ShouldCost;
   historical: HistoricalPrice;
   commodity: CommodityFeed;
   online: OnlinePrice;
@@ -183,6 +225,26 @@ export interface SupplierRecommendation {
   recommendationId: number;
   createdAt: string;
   reused: boolean;
+}
+
+/** One supplier's negotiation strategy: five pointers from our data, the last one the discount to ask for. */
+export interface VendorStrategy {
+  vendorId: string;
+  vendorName: string;
+  quotedPrice: number;
+  tRank: string | null;
+  lRank: string | null;
+  /** Side heading + text, e.g. "Market price", "Market trend", "Delivery record", "Ask". */
+  pointers: RecommendationPoint[];
+  ask: { pct: number; targetPrice: number; saving: number | null; basis: string };
+}
+
+export interface NegotiationStrategy {
+  rfqId: string;
+  unit: string;
+  quantity: number | null;
+  vendors: VendorStrategy[];
+  createdAt: string;
 }
 
 /**
@@ -233,6 +295,15 @@ export const getOnlinePrice = (rfqId: string, SA_RUNTIME: unknown): Promise<Onli
 /** Prices and suppliers in several markets (~30–90 s; cached for the day). */
 export const getMarketSearch = (rfqId: string, SA_RUNTIME: unknown, refresh = false): Promise<MarketSearch> =>
   runDirectTool('get-rfq-market-search', 'Get RFQ Market Prices by Region', { rfqId, ...(refresh ? { refresh: true } : {}) }, SA_RUNTIME);
+
+async function strategyTool(parameters: Record<string, unknown>, SA_RUNTIME: unknown): Promise<NegotiationStrategy> {
+  const res = await runDirectTool<NegotiationStrategy & { error?: string }>('get-rfq-negotiation-strategy', 'Get RFQ Negotiation Strategy', parameters, SA_RUNTIME);
+  if (res?.error || !Array.isArray(res?.vendors)) throw new Error(res?.error || 'no negotiation strategy came back');
+  return res;
+}
+
+/** Five pointers for every supplier, the last one the discount to ask for: our data only, a second or two. */
+export const getNegotiationStrategy = (rfqId: string, SA_RUNTIME: unknown): Promise<NegotiationStrategy> => strategyTool({ rfqId }, SA_RUNTIME);
 
 /** Picks one supplier with the reason. `refresh` runs a fresh study, web search included. */
 export const recommendSupplier = (rfqId: string, SA_RUNTIME: unknown, refresh = false): Promise<SupplierRecommendation> =>

@@ -464,14 +464,12 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
         </div>
       )}
 
-      {/* Start Negotiation → negotiation workspace, inline below, same screen */}
+      {/* Start Negotiation → negotiation workspace, inline below, same screen. It draws its own boxes:
+          the negotiation, then the market study and the strategy as new boxes below (review, 19 Oct). */}
       {showNegotiation && negotiationContext && (
         <div className="mt-8" ref={negotiationBlockRef}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
-          <div
-            className="mt-6 rounded-lg p-4"
-            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
-          >
+          <div className="mt-6">
             <ActiveNegotiations
               SA_RUNTIME={SA_RUNTIME}
               prId={negotiationContext.prId}

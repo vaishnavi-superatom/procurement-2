@@ -2,7 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { COLORS, SHADOWS } from '../../design-system/tokens';
 import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
-import { aiRanking, RANK_HELP, type RankedVendor, type RecommendationPoint, type SupplierRecommendation } from '../../data/rfq-recommendation';
+import {
+  aiRanking,
+  RANK_HELP,
+  type NegotiationStrategy,
+  type RankedVendor,
+  type RecommendationPoint,
+  type SupplierRecommendation,
+  type VendorStrategy,
+} from '../../data/rfq-recommendation';
 import { selectSupplier, type SupplierSelection } from '../../data/rfq-workflow';
 
 const TEAL = {
@@ -15,11 +23,6 @@ const TEAL = {
 const formatINR = (n: number | null | undefined): string => {
   if (n === null || n === undefined || isNaN(n)) return '—';
   return '₹' + Math.round(n).toLocaleString('en-IN');
-};
-
-const formatPct = (p: number | null | undefined): string => {
-  if (p === null || p === undefined || isNaN(p)) return '—';
-  return `${p >= 0 ? '+' : '−'}${Math.abs(p).toFixed(1)}%`;
 };
 
 const formatTime = (iso: string | null | undefined): string => {
@@ -56,7 +59,7 @@ export const AiRankBadge: React.FC<{ rank: number | null | undefined }> = ({ ran
       {rank}
     </span>
   ) : (
-    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the System Recommendation to rank">
+    <span className="text-[11px]" style={{ color: COLORS.text.tertiary }} title="Run the Market Analysis to rank">
       —
     </span>
   );
@@ -86,92 +89,48 @@ const PointList: React.FC<{ points: RecommendationPoint[]; className: string; he
   </ul>
 );
 
-/** The recommended supplier and why. Advisory: the buyer still chooses. */
-export const RecommendationCard: React.FC<{
-  rec: SupplierRecommendation | null;
-  loading: boolean;
-  error: string | null;
-  onRerun: () => void;
-}> = ({ rec, loading, error, onRerun }) => {
-  const pick = rec?.data.find((v) => v.vendorId === rec.recommendedVendorId) ?? null;
-  return (
-    <div className="rounded-xl overflow-hidden mb-4" style={cardStyle}>
-      <div className="px-4 py-3 flex items-start justify-between gap-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-        <div>
-          <h2 className="text-sm font-semibold flex items-center gap-1.5" style={{ color: COLORS.text.primary }}>
-            <Icon icon="mdi:creation-outline" className="w-4 h-4" style={{ color: TEAL.base }} />
-            System Recommendation
-          </h2>
-          <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-            Advisory. You choose the supplier below; choosing a different one needs a short reason.
-          </p>
-        </div>
-        {rec && !loading && (
-          <button
-            onClick={onRerun}
-            className="inline-flex items-center gap-1 text-[11px] font-medium flex-shrink-0"
-            style={{ color: TEAL.base }}
-            title="Run a fresh market study and recommendation"
-          >
-            <Icon icon="mdi:refresh" className="w-3.5 h-3.5" /> Run again
-          </button>
-        )}
-      </div>
-      <div className="px-4 py-3">
-        {loading ? (
-          <div className="space-y-2 animate-pulse">
-            <div className="h-5 w-48 rounded" style={{ backgroundColor: '#E2E8F0' }} />
-            <div className="h-3 w-full rounded" style={{ backgroundColor: COLORS.lightGray }} />
-            <div className="h-3 w-4/5 rounded" style={{ backgroundColor: COLORS.lightGray }} />
-            <p className="text-[11px] pt-1" style={{ color: COLORS.text.tertiary }}>Weighing the quotes, ranks and market study…</p>
-          </div>
-        ) : error ? (
-          <p className="text-xs" style={{ color: '#475569' }}>Couldn't get a recommendation: {error}</p>
-        ) : !rec ? null : !rec.recommendedVendorId ? (
-          <p className="text-xs" style={{ color: COLORS.text.secondary }}>{rec.rationale || 'No supplier can be recommended for this RFQ.'}</p>
-        ) : (
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-base font-bold" style={{ color: COLORS.text.primary }}>{rec.recommendedVendor || rec.recommendedVendorId}</span>
-              {pick && (
-                <span className="inline-flex items-center gap-1.5">
-                  <TRankBadge rank={pick.tRank} />
-                  <LRankBadge rank={pick.lRank} />
-                </span>
-              )}
-              {pick && (
-                <span className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-                  {formatINR(pick.quotedPrice)} / {rec.unit} · {pick.deliveryDays} days
-                </span>
-              )}
-            </div>
-            {rec.points?.length ? (
-              <PointList points={rec.points} className="text-xs space-y-1.5 pt-0.5" headingColor={COLORS.text.secondary} textColor={COLORS.text.primary} />
-            ) : (
-              <>
-                {rec.rationale && <p className="text-xs leading-relaxed" style={{ color: COLORS.text.primary }}>{rec.rationale}</p>}
-                {rec.considerations.length > 0 && (
-                  <ul className="text-xs space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.secondary }}>
-                    {rec.considerations.map((c, i) => (
-                      <li key={i}>{c}</li>
-                    ))}
-                  </ul>
-                )}
-              </>
-            )}
-            <p className="text-[10px]" style={{ color: COLORS.text.tertiary }}>
-              {rec.recommendationSource === 'ai' ? 'System recommendation' : 'Based on the combined score of price and technical rank'}
-              {!rec.agreesWithScore && <span title={weightsText(rec)}> · not the top combined score</span>}
-              {rec.createdAt ? ` · ${rec.reused ? 'saved' : 'made'} ${formatTime(rec.createdAt)}` : ''}
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
+/**
+ * The picked supplier's five pointers, the last one the discount to ask for
+ * (review, 18 Oct: no script, "1, 2, 3, 4, 5 pointers", one table with no box
+ * inside a box): plain lines under its row, in the row's own tint.
+ */
+const StrategyPointers: React.FC<{ strategy: VendorStrategy | null; loading: boolean; error: string | null; onRetry: () => void }> = ({
+  strategy,
+  loading,
+  error,
+  onRetry,
+}) =>
+  loading ? (
+    <p className="text-[11px] animate-pulse" style={{ color: COLORS.text.tertiary }}>Getting the pointers…</p>
+  ) : error ? (
+    <p className="text-xs" style={{ color: '#475569' }}>
+      Couldn't get the pointers: {error}
+      <button type="button" onClick={onRetry} className="ml-2 inline-flex items-center gap-1 text-[11px] font-medium" style={{ color: TEAL.base }}>
+        <Icon icon="mdi:refresh" className="w-3.5 h-3.5" /> Try again
+      </button>
+    </p>
+  ) : !strategy ? (
+    <p className="text-xs" style={{ color: COLORS.text.secondary }}>No pointers for this supplier.</p>
+  ) : (
+    <ul className="text-xs space-y-1">
+      {strategy.pointers.map((p) => (
+        <li key={p.heading} className="flex gap-3 leading-relaxed">
+          <span className="w-28 flex-none font-semibold" style={{ color: COLORS.text.secondary }}>{p.heading}</span>
+          <span style={{ color: COLORS.text.primary }}>{p.text}</span>
+        </li>
+      ))}
+    </ul>
   );
-};
 
-/** Pick one supplier; the pop-up confirms it (or asks why, for a deviation) and saves it. */
+// Narrow enough not to scroll sideways (review, 18 Oct): the averages, rate contract,
+// EcoVadis and flags columns went, and the score too (19 Oct); the AI rank shows the order.
+const COLUMNS = ['', 'AI Rank', 'Vendor', 'T-Rank', 'L-Rank', 'Quoted Price', 'Delivery'];
+
+/**
+ * The negotiation strategy as one table (review, 18 Oct): a row per supplier,
+ * the picked one open with its pointers; the pop-up confirms the pick (or asks
+ * why, for a deviation) and saves it.
+ */
 export const SelectSupplierList: React.FC<{
   rfqId: string;
   rec: SupplierRecommendation;
@@ -179,7 +138,12 @@ export const SelectSupplierList: React.FC<{
   onPick: (vendorId: string) => void;
   selection: SupplierSelection | null;
   onSaved: (selection: SupplierSelection) => void;
-}> = ({ rfqId, rec, pickedVendorId, onPick, selection, onSaved }) => {
+  /** Shown under the picked supplier (meeting, 18 Oct: "when we select a supplier, under that… strategy points"). */
+  strategy: NegotiationStrategy | null;
+  strategyLoading: boolean;
+  strategyError: string | null;
+  onRetryStrategy: () => void;
+}> = ({ rfqId, rec, pickedVendorId, onPick, selection, onSaved, strategy, strategyLoading, strategyError, onRetryStrategy }) => {
   const [confirming, setConfirming] = useState(false);
   const rows = aiRanking(rec);
   const picked = rows.find((v) => v.vendorId === pickedVendorId) ?? null;
@@ -187,17 +151,19 @@ export const SelectSupplierList: React.FC<{
 
   return (
     <div className="rounded-xl overflow-hidden mb-4" style={cardStyle}>
-      <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
-        <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Select Supplier</h2>
-        <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-          Recommended supplier first, then by combined score: {weightsText(rec)}.
-        </p>
+      <div className="px-4 py-3 flex items-start justify-between gap-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
+        <div>
+          <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Negotiation Strategy</h2>
+          <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
+            Recommended first, then by combined score: {weightsText(rec)}. Pick a supplier to see its pointers.
+          </p>
+        </div>
       </div>
       <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr style={{ backgroundColor: COLORS.lightBackground }}>
-            {['', 'AI Rank', 'Vendor', 'T-Rank', 'L-Rank', 'Score', 'Quoted Price', 'vs our 12-mo avg', 'vs contract', 'Delivery', 'EcoVadis', 'Flags'].map((h, i) => (
+            {COLUMNS.map((h, i) => (
               <th
                 key={i}
                 title={RANK_HELP[h]}
@@ -214,8 +180,8 @@ export const SelectSupplierList: React.FC<{
             const checked = pickedVendorId === v.vendorId;
             const recommended = v.vendorId === rec.recommendedVendorId;
             return (
+              <React.Fragment key={v.vendorId}>
               <tr
-                key={v.vendorId}
                 onClick={() => onPick(v.vendorId)}
                 className="cursor-pointer"
                 style={{ borderTop: `1px solid ${COLORS.lightGray}`, backgroundColor: checked ? TEAL.tint : 'transparent' }}
@@ -242,14 +208,22 @@ export const SelectSupplierList: React.FC<{
                 </td>
                 <td className="px-4 py-2"><TRankBadge rank={v.tRank} /></td>
                 <td className="px-4 py-2"><LRankBadge rank={v.lRank} /></td>
-                <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{v.score.toFixed(2)}</td>
                 <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>{formatINR(v.quotedPrice)}</td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatPct(v.vsHistoricalAvgPct)}</td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{formatPct(v.vsContractPct)}</td>
                 <td className="px-4 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{v.deliveryDays} days</td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{v.ecovadisScore ?? '—'}</td>
-                <td className="px-4 py-2 text-[11px]" style={{ color: COLORS.text.secondary }}>{v.flags || '—'}</td>
               </tr>
+              {checked && (
+                <tr style={{ backgroundColor: TEAL.tint }}>
+                  <td colSpan={COLUMNS.length} className="px-4 pb-3 pt-1">
+                    <StrategyPointers
+                      strategy={strategy?.vendors.find((s) => s.vendorId === v.vendorId) ?? null}
+                      loading={strategyLoading}
+                      error={strategyError}
+                      onRetry={onRetryStrategy}
+                    />
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             );
           })}
         </tbody>
@@ -260,8 +234,8 @@ export const SelectSupplierList: React.FC<{
           {savedForPick
             ? `${picked?.vendorName} selected${selection!.selectedBy ? ` by ${selection!.selectedBy}` : ''} · ${formatTime(selection!.createdAt)}${selection!.isDeviation ? ' · differs from the recommendation' : ''}`
             : picked
-              ? `${picked.vendorName} picked, not saved yet.`
-              : 'Pick one supplier.'}
+              ? `${picked.vendorName} picked; confirm it with Select Supplier.`
+              : 'Pick a supplier to see its pointers.'}
         </p>
         <button
           disabled={!picked || !!savedForPick}

@@ -4,6 +4,7 @@ import { COLORS } from '../../design-system/tokens';
 import { createVendorComment, listVendorComments, type VendorComment } from '../../data/rfq-vendor-comments';
 import { getSignedInUser } from '../../data/signed-in-user';
 import { capitalizeName, formatWhen, initials } from '../../utils/comment-format';
+import { T_RANK_STYLE } from '../../utils/t-rank-style';
 
 // Same teal accent as the rest of the RFQ screen (see index.tsx).
 const TEAL = {
@@ -56,13 +57,6 @@ export interface TRankDefinition {
 // T-rank badge — same colours wherever a T-rank shows
 // ============================================================
 
-const T_RANK_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
-  T1: { bg: '#DCFCE7', fg: '#16A34A', label: 'T1' },
-  T2: { bg: TEAL.tint, fg: TEAL.base, label: 'T2' },
-  T3: { bg: '#FEF3C7', fg: '#B45309', label: 'T3' },
-  T4: { bg: '#FFEDD5', fg: '#EA580C', label: 'T4' },
-  NOT_ACCEPTED: { bg: '#F1F5F9', fg: '#475569', label: 'Not accepted' },
-};
 
 export const TRankBadge: React.FC<{ rank: string | null | undefined }> = ({ rank }) => {
   if (!rank) return <span className="text-[11px]" style={{ color: COLORS.text.tertiary }}>—</span>;

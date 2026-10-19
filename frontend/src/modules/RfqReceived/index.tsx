@@ -680,6 +680,13 @@ const RfqDetailScreen: React.FC<{
     };
   }, [rfqId, SA_RUNTIME]);
 
+  // Once loaded, the whole RFQ sits in the middle of the screen, Start Negotiation included
+  // (review, 19 Oct: "reduce the height, show it in the center"); it's never taller than the screen.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!loading) rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [loading]);
+
   if (loading) {
     return <LoadingState height={520} message="Loading RFQ…" variant="skeleton" size="lg" />;
   }
@@ -715,7 +722,8 @@ const RfqDetailScreen: React.FC<{
   const negotiationSupported = Boolean(onStartNegotiation) && Boolean(leadingQuote);
 
   return (
-    <div className="w-full flex flex-col" style={{ height: 'calc(100vh - 120px)', minHeight: 480 }}>
+    // As tall as its content, up to the screen.
+    <div ref={rootRef} className="w-full flex flex-col" style={{ maxHeight: 'calc(100vh - 120px)' }}>
       {/* Fixed header */}
       <div className="flex-shrink-0">
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>
@@ -764,12 +772,7 @@ const RfqDetailScreen: React.FC<{
         <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}>
           <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
             <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Quotations</h2>
-                <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
-                  Click a vendor to compare its technical bid with the PR and set its T-rank.
-                </p>
-              </div>
+              <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Quotations</h2>
               {definitions.length > 0 && (
                 <button
                   onClick={() => setShowLegend((s) => !s)}
@@ -813,6 +816,7 @@ const RfqDetailScreen: React.FC<{
                       {h}
                     </th>
                   ))}
+                  <th className="w-12" />
                 </tr>
               </thead>
               <tbody>
@@ -831,12 +835,10 @@ const RfqDetailScreen: React.FC<{
                     }}
                   >
                     <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
-                      <Icon
-                        icon={expanded ? 'mdi:chevron-down' : 'mdi:chevron-right'}
-                        className="w-4 h-4 inline-block mr-1 -ml-1 align-text-bottom"
-                        style={{ color: COLORS.text.tertiary }}
-                      />
-                      <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
+                      {/* One line per vendor; its type and city on hover, to keep the page short. */}
+                      <span className="font-medium" title={[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}>
+                        {q.vendor_name || q.vendor_id}
+                      </span>
                       {q.is_awarded && (
                         <span
                           className="ml-2 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
@@ -845,9 +847,6 @@ const RfqDetailScreen: React.FC<{
                           Awarded
                         </span>
                       )}
-                      <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
-                        {[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
-                      </div>
                     </td>
                     <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
                     <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
@@ -857,10 +856,20 @@ const RfqDetailScreen: React.FC<{
                     <td className="px-4 py-2">
                       <TRankBadge rank={tRankOf(q.quote_id)} />
                     </td>
+                    {/* Arrow at the row's right end, so the row reads as one that opens (review, 18 Oct: "nothing is saying that you can" open it). */}
+                    <td className="px-4 py-2 text-right">
+                      <span
+                        aria-hidden
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full"
+                        style={{ backgroundColor: TEAL.tint, color: TEAL.base }}
+                      >
+                        <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} className="w-4 h-4" />
+                      </span>
+                    </td>
                   </tr>
                   {expanded && (
                     <tr>
-                      <td colSpan={7} className="p-0" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                      <td colSpan={8} className="p-0" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
                         <TechnicalEvaluation
                           rfqId={header.rfq_id}
                           vendorId={q.vendor_id}
@@ -906,10 +915,7 @@ const RfqDetailScreen: React.FC<{
             negotiate from (see onStartNegotiation / negotiationSupported above).
             This is the buyer actively entering negotiation, so an RFQ still
             "RFQ Received" moves to "In Negotiation" first. */}
-        <div
-          className="rounded-xl flex items-center justify-end gap-3 px-4 py-3"
-          style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
-        >
+        <div className="flex items-center justify-end gap-3">
           {startError && (
             <span className="text-xs mr-auto" style={{ color: '#475569' }}>
               Couldn't start the negotiation: {startError}

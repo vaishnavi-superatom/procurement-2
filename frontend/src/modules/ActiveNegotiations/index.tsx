@@ -5,16 +5,18 @@ import { COLORS, TYPOGRAPHY, SPACING, SHADOWS } from '../../design-system/tokens
 import LoadingState from '../../components/LoadingState';
 import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
 import { MarketStudyPanel } from './MarketStudy';
-import { AiRankBadge, LRankBadge, RecommendationCard, SelectSupplierList } from './SupplierSelection';
+import { AiRankBadge, LRankBadge, SelectSupplierList } from './SupplierSelection';
 import {
   aiRankByVendor,
   getMarketSearch,
   getMarketStudy,
+  getNegotiationStrategy,
   getOnlinePrice,
   RANK_HELP,
   recommendSupplier,
   type MarketInputs,
   type MarketSearch,
+  type NegotiationStrategy,
   type OnlinePrice,
   type SupplierRecommendation,
 } from '../../data/rfq-recommendation';
@@ -183,6 +185,18 @@ const RiskBadge: React.FC<{ tier: string | null }> = ({ tier }) => {
   );
 };
 
+// Each step is its own box on the page, like the RFQ's (review, 19 Oct: the market study is "a new card,
+// not in the old card"): the negotiation box, then the market study, then the strategy table.
+const BOX_STYLE = { backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card };
+
+/** A new step below the last: a divider, then its box (the market study panel or the strategy table is the box). */
+const NewStep: React.FC<{ stepRef?: React.Ref<HTMLDivElement>; children: React.ReactNode }> = ({ stepRef, children }) => (
+  <div ref={stepRef} className="mt-8" style={{ scrollMarginTop: 16 }}>
+    <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+    <div className="mt-6">{children}</div>
+  </div>
+);
+
 const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prId, rfqId, materialId, vendorId, onBack, onProceedToApproval }) => {
   const [prLine, setPrLine] = useState<PRLine | null>(null);
   const [header, setHeader] = useState<RfqHeader | null>(null);
@@ -197,8 +211,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   // buyer see the award before anything is sent forward.
   const [showAwardReview, setShowAwardReview] = useState(false);
   // The one supplier the buyer picks to award to (product review, Oct 16:
-  // "ask them to pick one"). Nothing is pre-selected — there's no
-  // recommendation until the buyer asks for the System Recommendation.
+  // "ask them to pick one"). Nobody is picked when the Negotiation Strategy
+  // opens; picking one shows its pointers (review, Oct 19).
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
   // The pick once confirmed and saved (rfq_supplier_selections); only a saved
   // pick can go to approval.
@@ -218,9 +232,25 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const [recError, setRecError] = useState<string | null>(null);
   // Bumped per run (and per RFQ) so a slow answer from an earlier run is ignored.
   const runIdRef = useRef(0);
+  // Whether the market search is still running: a strategy built meanwhile gets its pointers again once it's in.
+  const marketSearchPendingRef = useRef(false);
+  const refreshPointersRef = useRef(false);
+  // Negotiation Strategy (meetings, 18 Oct): five pointers per supplier, the last one the discount to ask for.
+  const [strategyOpen, setStrategyOpen] = useState(false);
+  const [strategy, setStrategy] = useState<NegotiationStrategy | null>(null);
+  const [strategyLoading, setStrategyLoading] = useState(false);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
+  const strategyRunRef = useRef(0);
 
   useEffect(() => {
     runIdRef.current += 1;
+    marketSearchPendingRef.current = false;
+    refreshPointersRef.current = false;
+    strategyRunRef.current += 1;
+    setStrategyOpen(false);
+    setStrategy(null);
+    setStrategyLoading(false);
+    setStrategyError(null);
     setShowAwardReview(false);
     setSelectedVendorId(null);
     setSelection(null);
@@ -241,8 +271,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
    * side; the recommendation follows once the online price is in, so it
    * reuses that cached price. `refresh` re-runs everything from scratch.
    */
-  const runRecommendation = async (refresh = false) => {
-    if (!rfqId) return;
+  const runRecommendation = async (refresh = false): Promise<SupplierRecommendation | null> => {
+    if (!rfqId) return null;
     const runId = ++runIdRef.current;
     const current = () => runId === runIdRef.current;
     setStudyOpen(true);
@@ -254,21 +284,27 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     // Prices and suppliers in each market: slower (about a minute), fills card ③ when done.
     setMarketSearch(null);
     setMarketSearchLoading(true);
+    marketSearchPendingRef.current = true;
     getMarketSearch(rfqId, SA_RUNTIME, refresh)
       .then((found) => current() && setMarketSearch(found))
       .catch(() => current() && setMarketSearch({ available: false, profile: null, regions: [], summary: "Couldn't search the markets just now." }))
-      .finally(() => current() && setMarketSearchLoading(false));
+      .finally(() => {
+        if (!current()) return;
+        marketSearchPendingRef.current = false;
+        setMarketSearchLoading(false);
+      });
 
     if (refresh) {
       setMarket(null);
       setOnline(null);
       try {
         const result = await recommendSupplier(rfqId, SA_RUNTIME, true);
-        if (!current()) return;
+        if (!current()) return null;
         setRec(result);
         setMarket(result.market);
         setOnline(result.market?.online ?? null);
         setMarketError(null);
+        return result;
       } catch (err) {
         if (current()) setRecError(err instanceof Error ? err.message : 'Recommendation failed');
       } finally {
@@ -277,7 +313,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           setOnlineLoading(false);
         }
       }
-      return;
+      return null;
     }
 
     setMarketError(null);
@@ -293,17 +329,72 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     } finally {
       if (current()) setOnlineLoading(false);
     }
-    if (!current()) return;
+    if (!current()) return null;
 
     try {
       const result = await recommendSupplier(rfqId, SA_RUNTIME);
-      if (current()) setRec(result);
+      if (!current()) return null;
+      setRec(result);
+      return result;
     } catch (err) {
       if (current()) setRecError(err instanceof Error ? err.message : 'Recommendation failed');
     } finally {
       if (current()) setRecLoading(false);
     }
+    return null;
   };
+
+  /**
+   * Five pointers for every supplier (a second or two). The table opens with nobody picked:
+   * pointers show once the buyer picks a supplier (review, 19 Oct).
+   */
+  const runStrategy = async () => {
+    if (!rfqId) return;
+    const runId = ++strategyRunRef.current;
+    const current = () => runId === strategyRunRef.current;
+    setStrategyOpen(true);
+    setStrategy(null);
+    setStrategyError(null);
+    setStrategyLoading(true);
+    const searchPending = marketSearchPendingRef.current;
+    try {
+      let result = await getNegotiationStrategy(rfqId, SA_RUNTIME);
+      // The market search finished meanwhile: once more, so the market price pointer can use its listings.
+      if (searchPending && !marketSearchPendingRef.current) result = await getNegotiationStrategy(rfqId, SA_RUNTIME);
+      if (!current()) return;
+      setStrategy(result);
+      // Still searching: the effect below asks again once it's in.
+      refreshPointersRef.current = marketSearchPendingRef.current;
+    } catch (err) {
+      if (current()) setStrategyError(err instanceof Error ? err.message : 'Negotiation strategy failed');
+    } finally {
+      if (current()) setStrategyLoading(false);
+    }
+  };
+
+  /** "Run again": a fresh market study and recommendation, then the strategy from them. */
+  const rerunAll = async () => {
+    const before = runIdRef.current;
+    await runRecommendation(true);
+    // Skipped when another run, or another RFQ, started meanwhile.
+    if (runIdRef.current === before + 1) runStrategy();
+  };
+
+  // A strategy built while the market search was still running: its pointers again once the search is in,
+  // so the market price pointer can use the listings. Quietly; the table stays as it is meanwhile.
+  useEffect(() => {
+    if (marketSearchLoading || !rfqId || !refreshPointersRef.current) return;
+    refreshPointersRef.current = false;
+    const runId = strategyRunRef.current;
+    getNegotiationStrategy(rfqId, SA_RUNTIME)
+      .then((result) => {
+        if (runId !== strategyRunRef.current) return;
+        setStrategy(result);
+      })
+      .catch(() => {
+        // Keep the pointers already on screen.
+      });
+  }, [marketSearchLoading, rfqId, SA_RUNTIME]);
 
   useEffect(() => {
     if (!prId || !rfqId || !materialId) return;
@@ -395,11 +486,29 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     };
   }, [prId, rfqId, materialId, SA_RUNTIME]);
 
+  // Each step opens in view, at the top of the screen (review, 18 Oct: "if the box is half aligned, it
+  // creates confusion"): this page once loaded (the home screen scrolls to it while it still loads, and the
+  // RFQ above can shift it), then the market study and the strategy table as they open.
+  const pageRef = useRef<HTMLDivElement>(null);
+  const studyRef = useRef<HTMLDivElement>(null);
+  const strategyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!loading) pageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [loading]);
+  useEffect(() => {
+    if (studyOpen) studyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [studyOpen]);
+  useEffect(() => {
+    if (strategyOpen) strategyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [strategyOpen]);
+
   // No built-in recommendation here: the product review (Oct 16) rejected
   // comparing on lowest price / compliance / delivery and wants nothing
   // recommended until the buyer asks for the System Recommendation.
   const selectedQuote = quotes.find((q) => q.vendor_id === selectedVendorId) ?? null;
   const readyForApproval = !!selectedQuote && selection?.vendorId === selectedQuote.vendor_id && header?.rfq_status !== 'Awarded';
+  // Proceed to Approval comes with the supplier table (after Run Negotiation Strategy), not before.
+  const supplierTableShown = strategyOpen && header?.rfq_status !== 'Awarded' && !!rec && rec.data.length > 0;
   // Filled once the System Recommendation has run; same order as Select Supplier.
   const aiRanks = aiRankByVendor(rec);
 
@@ -622,7 +731,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   }
 
   return (
-    <div className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}>
+    <div ref={pageRef} className="w-full" style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, scrollMarginTop: 24 }}>
+      <div className="rounded-lg p-4" style={BOX_STYLE}>
       {onBack && (
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>
           <Icon icon="mdi:arrow-left" className="w-4 h-4" /> Back
@@ -661,7 +771,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
           <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-            Technically accepted vendors by quoted price. T-rank and L-rank are separate; the AI rank fills in after the System Recommendation.
+            Technically accepted vendors by quoted price. T-rank and L-rank are separate.
           </p>
           {notAcceptedCount > 0 && (
             <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
@@ -727,30 +837,26 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           </table>
           </div>
         )}
-        {/* No recommendation until the buyer asks for one (product review, Oct 16). */}
-        {quotes.length > 0 && (
-          <div className="px-4 py-3 flex items-center justify-between gap-3" style={{ borderTop: `1px solid ${TEAL.border}`, backgroundColor: COLORS.lightBackground }}>
-            <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
-              {studyOpen
-                ? 'Market study and recommendation below.'
-                : 'Runs a market study (our past prices, commodity trend, online price) and recommends one supplier.'}
-            </p>
-            {!studyOpen && (
-              <button
-                onClick={() => runRecommendation()}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold flex-shrink-0"
-                style={{ backgroundColor: TEAL.base, color: COLORS.white }}
-              >
-                <Icon icon="mdi:creation-outline" className="w-4 h-4" />
-                System Recommendation
-              </button>
-            )}
+      </div>
+
+        {/* "Market Analysis" (review, 18 Oct), a plain button with no box or text (review, 19 Oct): it runs
+            the market study, which opens as a new box below; the recommendation runs in the background. */}
+        {quotes.length > 0 && !studyOpen && (
+          <div className="flex justify-end">
+            <button
+              onClick={() => runRecommendation()}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold flex-shrink-0"
+              style={{ backgroundColor: TEAL.base, color: COLORS.white }}
+            >
+              <Icon icon="mdi:chart-box-outline" className="w-4 h-4" />
+              Market Analysis
+            </button>
           </div>
         )}
       </div>
 
       {studyOpen && (
-        <>
+        <NewStep stepRef={studyRef}>
           <MarketStudyPanel
             market={market}
             online={online}
@@ -758,47 +864,95 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             marketSearch={marketSearch}
             marketSearchLoading={marketSearchLoading}
             error={marketError}
-            quotes={quotes.map((q) => ({ vendorId: q.vendor_id, price: q.quoted_price }))}
+            quotes={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank, price: Number(q.quoted_price) }))}
           />
-          <RecommendationCard rec={rec} loading={recLoading} error={recError} onRerun={() => runRecommendation(true)} />
-          {rec && rec.data.length > 0 && (
-            header?.rfq_status === 'Awarded' ? (
-              <div className="rounded-lg px-4 py-3 mb-4 flex items-center gap-2" style={{ backgroundColor: TEAL.tint, border: `1px solid ${TEAL.border}` }}>
-                <Icon icon="mdi:check-decagram" className="w-4 h-4 flex-shrink-0" style={{ color: TEAL.base }} />
-                <p className="text-xs" style={{ color: TEAL.dark }}>
-                  This RFQ is already awarded
-                  {header.awarded_vendor_id ? ` to ${quotes.find((q) => q.vendor_id === header.awarded_vendor_id)?.vendor_name || header.awarded_vendor_id}` : ''}, so
-                  there's no supplier to select.
-                </p>
-              </div>
-            ) : (
-              <SelectSupplierList
-                rfqId={rfqId}
-                rec={rec}
-                pickedVendorId={selectedVendorId}
-                onPick={setSelectedVendorId}
-                selection={selection}
-                onSaved={(s) => {
-                  setSelection(s);
-                  setSelectedVendorId(s.vendorId);
-                }}
-              />
-            )
+        </NewStep>
+      )}
+
+      {/* Run Negotiation Strategy: a plain button too; while the recommendation (which orders the table)
+          is still running in the background it waits, and an error says so beside it. */}
+      {studyOpen && !strategyOpen && (
+        <div className="flex items-center justify-end gap-3">
+          {recError && <span className="text-xs" style={{ color: '#475569' }}>Couldn't weigh the quotes: {recError}</span>}
+          <button
+            onClick={() => (recError ? runRecommendation() : runStrategy())}
+            disabled={recLoading}
+            title={recLoading ? 'Weighing the quotes, ranks and market study…' : undefined}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold flex-shrink-0"
+            style={{
+              backgroundColor: recLoading ? COLORS.lightGray : TEAL.base,
+              color: recLoading ? COLORS.text.tertiary : COLORS.white,
+              cursor: recLoading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <Icon
+              icon={recError ? 'mdi:refresh' : recLoading ? 'mdi:loading' : 'mdi:handshake-outline'}
+              className={`w-4 h-4 ${recLoading ? 'animate-spin' : ''}`}
+            />
+            {recError ? 'Try again' : 'Run Negotiation Strategy'}
+          </button>
+        </div>
+      )}
+
+      {studyOpen && strategyOpen && (
+        <NewStep stepRef={strategyRef}>
+          {header?.rfq_status === 'Awarded' ? (
+            <div className="rounded-lg px-4 py-3 mb-4 flex items-center gap-2" style={{ backgroundColor: TEAL.tint, border: `1px solid ${TEAL.border}` }}>
+              <Icon icon="mdi:check-decagram" className="w-4 h-4 flex-shrink-0" style={{ color: TEAL.base }} />
+              <p className="text-xs" style={{ color: TEAL.dark }}>
+                This RFQ is already awarded
+                {header.awarded_vendor_id ? ` to ${quotes.find((q) => q.vendor_id === header.awarded_vendor_id)?.vendor_name || header.awarded_vendor_id}` : ''}, so
+                there's no supplier to select.
+              </p>
+            </div>
+          ) : rec && rec.data.length > 0 ? (
+            <SelectSupplierList
+              rfqId={rfqId}
+              rec={rec}
+              pickedVendorId={selectedVendorId}
+              onPick={setSelectedVendorId}
+              selection={selection}
+              onSaved={(s) => {
+                setSelection(s);
+                setSelectedVendorId(s.vendorId);
+              }}
+              strategy={strategy}
+              strategyLoading={strategyLoading}
+              strategyError={strategyError}
+              onRetryStrategy={() => runStrategy()}
+            />
+          ) : (
+            <div
+              className="rounded-xl px-4 py-3 mb-4 flex items-center justify-between gap-3"
+              style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
+            >
+              <p className="text-xs" style={{ color: recError ? '#475569' : COLORS.text.secondary }}>
+                {recLoading
+                  ? 'Weighing the quotes, ranks and market study…'
+                  : recError
+                    ? `Couldn't weigh the quotes: ${recError}`
+                    : rec?.rationale || 'No supplier can be recommended for this RFQ.'}
+              </p>
+              {recError && !recLoading && (
+                <button onClick={rerunAll} className="inline-flex items-center gap-1 text-[11px] font-medium flex-shrink-0" style={{ color: TEAL.base }}>
+                  <Icon icon="mdi:refresh" className="w-3.5 h-3.5" /> Try again
+                </button>
+              )}
+            </div>
           )}
-        </>
+        </NewStep>
       )}
 
       {/* Hands off the PR, RFQ, and the selected supplier to the award review
           above. Disabled until a selection is confirmed and saved. */}
+      {supplierTableShown && (
       <div
         className="rounded-xl flex items-center justify-end gap-3 px-4 py-3 mt-4"
         style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
       >
         {!readyForApproval && (
           <p className="text-[11px] mr-auto" style={{ color: COLORS.text.tertiary }}>
-            {header?.rfq_status === 'Awarded'
-              ? 'This RFQ is already awarded.'
-              : 'Run the System Recommendation, then select and confirm one supplier.'}
+            Select and confirm one supplier to send it for approval.
           </p>
         )}
         <button
@@ -818,6 +972,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           Proceed to Approval
         </button>
       </div>
+      )}
     </div>
   );
 };

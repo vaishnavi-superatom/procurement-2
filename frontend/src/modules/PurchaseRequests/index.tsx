@@ -825,6 +825,13 @@ const PRDetailScreen: React.FC<{
     };
   }, [prId, SA_RUNTIME]);
 
+  // Once loaded, the whole PR sits in the middle of the screen, RFQ Status included, rather than half
+  // under the fold (review, 19 Oct); it's never taller than the screen.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!loading) rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [loading]);
+
   if (loading) {
     return <LoadingState height={520} message="Loading purchase request…" variant="skeleton" size="lg" />;
   }
@@ -849,7 +856,8 @@ const PRDetailScreen: React.FC<{
   const totalValue = lines.reduce((sum, l) => sum + Number(l.total_value || 0), 0);
 
   return (
-    <div className="w-full flex flex-col" style={{ height: 'calc(100vh - 120px)', minHeight: 480 }}>
+    // As tall as its content, up to the screen: a short PR leaves no empty space above Comments.
+    <div ref={rootRef} className="w-full flex flex-col" style={{ maxHeight: 'calc(100vh - 120px)' }}>
       {/* Fixed header */}
       <div className="flex-shrink-0">
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>

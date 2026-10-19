@@ -4,13 +4,16 @@
  * through the tool executor like any other tool.
  *
  *   1. RFQ facts       eligible vendors with T/L ranks, quote terms, scorecard
- *   2. Market study    historical price, commodity feed, online reference price
- *                      (OpenRouter web search), sustainability (EcoVadis) and our
- *                      rate-contract benchmark
+ *   2. Market study    should cost (once entered), historical price, commodity feed,
+ *                      online reference price (OpenRouter web search), sustainability
+ *                      (EcoVadis) and our rate-contract benchmark
  *   3. Score           60% L-rank / 40% T-rank; price vs benchmarks is shown, not weighted
  *   4. Recommendation  the model picks one eligible vendor and explains why; falls
  *                      back to the step-3 top pick when it fails or misbehaves
  *   5. Save            snapshot to rfq_recommendations
+ *
+ * Also the negotiation strategy (meeting, 18 Oct): per supplier, five pointers from
+ * the same data, the last one the discount to ask for.
  *
  * Tables it writes (source writeMode must be at least 'dml'), created once in
  * the procurement DB:
@@ -30,6 +33,20 @@
  *     model text, fetched_on date NOT NULL DEFAULT CURRENT_DATE, created_at timestamptz NOT NULL DEFAULT now()
  *   );
  *   CREATE INDEX idx_market_reference_prices_material ON public.market_reference_prices (material_id, fetched_on);
+ *
+ * Read only, and not created yet: the should cost per material, which Ashish
+ * provides (meeting, 18 Oct). Until the table exists the study reports
+ * "no should cost entered".
+ *
+ *   CREATE TABLE public.material_should_costs (
+ *     id serial PRIMARY KEY, material_id text NOT NULL,
+ *     should_cost numeric NOT NULL,           -- per unit, INR
+ *     unit text,                              -- the material's unit when empty
+ *     breakdown jsonb NOT NULL DEFAULT '[]',  -- [{"label": "Bill of materials", "amount": 812000}, ...]
+ *     basis text, source text,                -- e.g. "ex-works"; who gave the figure, and when
+ *     updated_by text, updated_at timestamptz NOT NULL DEFAULT now()
+ *   );
+ *   CREATE INDEX idx_material_should_costs_material ON public.material_should_costs (material_id, updated_at);
  */
 
 import { LLM, getRequestContext } from '@superatomai/sdk-node';
@@ -219,6 +236,45 @@ async function loadRfqFacts(run: Run, rfqId: string): Promise<{ rfq: RfqFacts; v
 // Step 2 — market inputs
 // ============================================================
 
+/**
+ * What the item should cost to make (bill of materials, manpower, IP and the
+ * rest), per material; Ashish provides the figures (meeting, 18 Oct). See the
+ * material_should_costs table above.
+ */
+async function shouldCost(run: Run, rfq: RfqFacts) {
+	const none = { available: false, summary: 'No should cost entered for this material yet.' };
+	try {
+		const [table] = await run(`SELECT to_regclass('public.material_should_costs') IS NOT NULL AS ready`);
+		if (table?.ready !== true) return none;
+		const [r] = await run(`
+			SELECT should_cost, unit, breakdown, basis, source, updated_at::text AS updated_at
+			FROM material_should_costs
+			WHERE material_id = @materialId
+			ORDER BY updated_at DESC
+			LIMIT 1`, { materialId: rfq.materialId });
+		const value = num(r?.should_cost);
+		if (value === null) return none;
+		const unit = r.unit || rfq.unit;
+		const breakdown = (Array.isArray(r.breakdown) ? r.breakdown : [])
+			.filter((b: any) => typeof b?.label === 'string' && num(b?.amount) !== null)
+			.map((b: any) => ({ label: b.label as string, amount: round(Number(b.amount)) }));
+		return {
+			available: true,
+			shouldCost: round(value),
+			unit,
+			breakdown,
+			basis: r.basis ?? null,
+			source: r.source ?? null,
+			updatedAt: r.updated_at ?? null,
+			summary: `Should cost ${inr(value)}/${unit}${r.source ? ` (${r.source})` : ''}.`,
+		};
+	} catch (e) {
+		// The rest of the study still stands without it.
+		console.warn(`[RFQ-RECOMMENDATION] should cost for ${rfq.materialId} unavailable: ${errMsg(e)}`);
+		return none;
+	}
+}
+
 /** ① What we have paid for this material before the RFQ. */
 async function historicalPrice(run: Run, rfq: RfqFacts) {
 	const rows = await run(`
@@ -282,6 +338,9 @@ async function historicalPrice(run: Run, rfq: RfqFacts) {
 		trend3mPct: recent !== null && prior !== null ? pct(recent, prior) : null,
 		standardPrice: rfq.standardPrice,
 		series: [...byMonth.entries()].map(([month, ps]) => ({ month, avgPrice: round(ps.reduce((s, p) => s + p, 0) / ps.length), orders: ps.length })),
+		// Every order for the chart, not monthly averages (meeting, 18 Oct: "increase the number of data points"); latest 240.
+		orders: orders.slice(-240).map(o => ({ date: o.date, price: round(o.price), vendorName: o.vendorName })),
+		rfqDate: rfq.rfqDate,
 		summary: orders.length === 0
 			? `No previous purchase orders for this material; standard price is ${rfq.standardPrice ? inr(rfq.standardPrice) : 'not set'}.`
 			: avg12m !== null
@@ -610,6 +669,89 @@ async function searchRegion(rfq: RfqFacts, specs: string, region: MarketRegion, 
 	}
 }
 
+const medianQuoteOf = (vendors: VendorQuote[]): number | null => {
+	const prices = vendors.filter(v => v.eligible).map(v => v.quotedPrice).sort((a, b) => a - b);
+	return prices.length ? prices[Math.floor(prices.length / 2)] : null;
+};
+
+// ECB reference rates from Frankfurter (free, no key), once a day, to put
+// foreign listings in rupees.
+const FX_URL = 'https://api.frankfurter.dev/v1/latest?base=INR';
+let fxCache: { day: string; date: string; inrPer: Record<string, number> } | null = null;
+
+/** Rupees per unit of each currency (INR = 1); null when the rates can't be fetched. */
+async function inrRates(): Promise<{ date: string; inrPer: Record<string, number> } | null> {
+	const day = new Date().toISOString().slice(0, 10);
+	if (fxCache?.day === day) return fxCache;
+	try {
+		const res = await withTimeout(fetch(FX_URL), 8_000, 'exchange rates');
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const body: any = await res.json();
+		const inrPer: Record<string, number> = { INR: 1 };
+		for (const [currency, perInr] of Object.entries(body?.rates ?? {})) {
+			if (typeof perInr === 'number' && perInr > 0) inrPer[currency] = 1 / perInr;
+		}
+		fxCache = { day, date: String(body?.date ?? day), inrPer };
+		return fxCache;
+	} catch (e) {
+		console.warn(`[RFQ-RECOMMENDATION] exchange rates unavailable: ${errMsg(e)}`);
+		return null;
+	}
+}
+
+// Listings name the same unit in many ways (review, 19 Oct: "per unit or per piece, need to be consistent"):
+// one item becomes the material's own unit when that is EA, and a tonne becomes MT when that is MT.
+const ONE_ITEM = /^(?:units?|pieces?|pcs?|nos?|numbers?|each|ea|items?)$/i;
+const ONE_TONNE = /^(?:t|tons?|tonnes?|mts?|metric ?tonn?e?s?)$/i;
+function sameUnitName(raw: unknown, materialUnit: string): string {
+	const unit = String(raw ?? '').trim().replace(/^per\s+/i, '').replace(/\.$/, '');
+	if (!unit) return materialUnit;
+	if (materialUnit === 'EA' && ONE_ITEM.test(unit)) return 'EA';
+	if (materialUnit === 'MT' && ONE_TONNE.test(unit)) return 'MT';
+	return unit;
+}
+
+/**
+ * Each listing in rupees and with its unit named like the material's, and the
+ * one to use as the market price when India's reference search finds none
+ * (meeting, 18 Oct: "one price meets the spec, why didn't we consider that?"):
+ * listings that meet the specs, India first, else any market; the middle one
+ * when several do. Ones far from the quotes are left out, as they are for the
+ * reference price.
+ */
+async function withBestListing(result: any, vendors: VendorQuote[], materialUnit: string) {
+	const fx = await inrRates();
+	const medianQuote = medianQuoteOf(vendors);
+	const regions = (result.regions ?? []).map((r: any) => ({
+		...r,
+		listings: (r.listings ?? []).map((l: any) => {
+			const rate = l.currency === 'INR' ? 1 : fx?.inrPer[l.currency];
+			const named = { ...l, unit: sameUnitName(l.unit, materialUnit) };
+			return rate ? { ...named, priceInr: round(l.price * rate) } : named;
+		}),
+	}));
+	const candidates = regions
+		.flatMap((r: any) => r.listings.map((l: any) => ({ ...l, region: r.region })))
+		.filter((l: any) => l.meetsSpecs === 'yes' && l.priceInr > 0)
+		.filter((l: any) => !medianQuote || (l.priceInr / medianQuote >= 1 / 3 && l.priceInr / medianQuote <= 3));
+	const india = candidates.filter((l: any) => l.currency === 'INR');
+	const pool = (india.length ? india : candidates).sort((a: any, b: any) => a.priceInr - b.priceInr);
+	const pick = pool[Math.floor((pool.length - 1) / 2)];
+	const foreign = pick && pick.currency !== 'INR';
+	return {
+		...result,
+		regions,
+		fxDate: fx?.date ?? null,
+		bestListing: pick
+			? {
+				region: pick.region, source: pick.source, title: pick.title, url: pick.url, unit: pick.unit,
+				price: pick.price, currency: pick.currency, priceInr: pick.priceInr,
+				rate: foreign ? round(fx!.inrPer[pick.currency], 4) : null, rateDate: foreign ? fx!.date : null,
+			}
+			: null,
+	};
+}
+
 /** Listings and suppliers per market for the RFQ's material, cached per material per day. */
 async function marketSearch(run: Run, rfq: RfqFacts, vendors: VendorQuote[], requirements: any[], opts: { refresh?: boolean; cachedOnly?: boolean } = {}) {
 	const profile = marketProfileOf(rfq);
@@ -619,12 +761,11 @@ async function marketSearch(run: Run, rfq: RfqFacts, vendors: VendorQuote[], req
 			SELECT result, created_at FROM market_reference_prices
 			WHERE material_id = @materialId AND fetched_on = CURRENT_DATE AND query = @key
 			ORDER BY created_at DESC LIMIT 1`, { materialId: rfq.materialId, key: MARKET_SEARCH_KEY });
-		if (hit) return { ...hit.result, fetchedAt: hit.created_at, cached: true };
+		if (hit) return withBestListing({ ...hit.result, fetchedAt: hit.created_at, cached: true }, vendors, rfq.unit);
 	}
 	if (opts.cachedOnly) return { available: false, pending: true, profile: profile.name, regions: [], summary: 'Not searched yet today.' };
 
-	const prices = vendors.filter(v => v.eligible).map(v => v.quotedPrice).sort((a, b) => a - b);
-	const medianQuote = prices.length ? prices[Math.floor(prices.length / 2)] : null;
+	const medianQuote = medianQuoteOf(vendors);
 	const started = Date.now();
 	const regions = await Promise.all(profile.regions.map(r => searchRegion(rfq, keySpecs(requirements), r, medianQuote)));
 	const priced = regions.filter(r => r.listings.length).length;
@@ -642,7 +783,29 @@ async function marketSearch(run: Run, rfq: RfqFacts, vendors: VendorQuote[], req
 			VALUES (@materialId, @key, CAST(@result AS jsonb), @model)`,
 			{ materialId: rfq.materialId, key: MARKET_SEARCH_KEY, result: JSON.stringify(result), model: MARKET_SEARCH_MODEL });
 	}
-	return { ...result, fetchedAt: new Date().toISOString(), cached: false };
+	return withBestListing({ ...result, fetchedAt: new Date().toISOString(), cached: false }, vendors, rfq.unit);
+}
+
+/** A market listing standing in for the India reference price, and saying so. */
+function listingAsMarketPrice(reference: any, l: any, unit: string) {
+	const foreign = l.currency !== 'INR';
+	const asListed = `${l.currency} ${Number(l.price).toLocaleString('en-US')}`;
+	return {
+		available: true,
+		priceInr: l.priceInr,
+		unit: l.unit || unit,
+		matchedModel: l.title,
+		basis: foreign ? `${l.region} listing, before freight and import duty` : `${l.region} marketplace listing`,
+		notes: `No India reference price met the specs, so this is a listing that does, on ${l.source}`
+			+ (foreign ? `: ${asListed} at ₹${l.rate} per ${l.currency} (${l.rateDate}).` : '.'),
+		// A foreign price before freight and duty isn't on a delivered basis like the quotes.
+		comparable: !foreign,
+		fromListing: l,
+		referenceReason: reference?.noPriceReason ?? null,
+		sources: [{ title: l.title, url: l.url }],
+		summary: `Market price from a ${l.region} listing that meets the specs: ${inr(l.priceInr)}/${l.unit || unit}`
+			+ (foreign ? ` (${asListed}, before freight and import duty).` : '.'),
+	};
 }
 
 /** ④ Sustainability of the vendors that quoted. */
@@ -692,13 +855,23 @@ async function contractBenchmark(run: Run, rfq: RfqFacts, vendors: VendorQuote[]
 /** Steps 1–2 together: the facts plus all five market inputs. */
 async function marketStudy(run: Run, rfqId: string, online: { refresh?: boolean; cachedOnly?: boolean }) {
 	const { rfq, vendors, requirements } = await loadRfqFacts(run, rfqId);
-	const [historical, commodity, contract, onlinePrice] = await Promise.all([
+	const [should, historical, commodity, contract, onlinePrice] = await Promise.all([
+		shouldCost(run, rfq),
 		historicalPrice(run, rfq),
 		commodityFeed(run, rfq),
 		contractBenchmark(run, rfq, vendors),
 		onlineReferencePrice(run, rfq, requirements, online),
 	]);
-	const market = { historical, commodity, online: checkOnlineAgainstQuotes(onlinePrice, vendors), sustainability: sustainability(vendors), contract };
+	let marketPrice = checkOnlineAgainstQuotes(onlinePrice, vendors);
+	if (marketPrice && !marketPrice.pending && !(marketPrice.available && marketPrice.priceInr)) {
+		// No India reference price: a listing that meets the specs from today's market search, once it's in.
+		const search: any = await marketSearch(run, rfq, vendors, requirements, { cachedOnly: true });
+		if (search.bestListing) marketPrice = checkOnlineAgainstQuotes(listingAsMarketPrice(onlinePrice, search.bestListing, rfq.unit), vendors);
+	}
+	const market = {
+		shouldCost: should, historical, commodity, online: marketPrice,
+		sustainability: sustainability(vendors), contract,
+	};
 	return { rfq, vendors, requirements, market };
 }
 
@@ -937,17 +1110,206 @@ async function runRecommendation(run: Run, rfqId: string, opts: { refresh?: bool
 }
 
 // ============================================================
+// Negotiation strategy (meetings, 18 Oct): for every supplier, five short
+// pointers from our data, the last one the discount to ask for. No script
+// ("get rid of that script"), so no model call.
+// ============================================================
+
+interface DeliveryRecord {
+	delivered: number;
+	late: number;
+	avgDaysLate: number | null;
+	worstDaysLate: number | null;
+}
+
+/** Each vendor's deliveries to us, any material: how many came late, and by how much. */
+async function deliveryRecords(run: Run, vendorIds: string[]): Promise<Map<string, DeliveryRecord>> {
+	const records = new Map<string, DeliveryRecord>();
+	if (!vendorIds.length) return records;
+	const rows = await run(`
+		SELECT vendor_id,
+		       count(*) AS delivered,
+		       sum(CASE WHEN actual_delivery_date > delivery_date THEN 1 ELSE 0 END) AS late,
+		       avg(CASE WHEN actual_delivery_date > delivery_date THEN actual_delivery_date - delivery_date END) AS avg_days_late,
+		       max(actual_delivery_date - delivery_date) AS worst_days_late
+		FROM purchase_orders
+		WHERE actual_delivery_date IS NOT NULL AND delivery_date IS NOT NULL
+		  AND vendor_id IN (${vendorIds.map((_, i) => `@v${i}`).join(', ')})
+		GROUP BY vendor_id`, Object.fromEntries(vendorIds.map((id, i) => [`v${i}`, id])));
+	for (const r of rows) {
+		const avgLate = num(r.avg_days_late);
+		records.set(r.vendor_id, {
+			delivered: Number(r.delivered),
+			late: Number(r.late),
+			avgDaysLate: avgLate !== null ? round(avgLate, 1) : null,
+			worstDaysLate: num(r.worst_days_late),
+		});
+	}
+	return records;
+}
+
+interface NegotiationAsk {
+	/** % off the quote. */
+	pct: number;
+	targetPrice: number;
+	/** On the requested quantity; null when it isn't known. */
+	saving: number | null;
+	basis: string;
+}
+
+/** "12.4% above it" / "the same as it". */
+const rel = (p: number, what: string) => (p === 0 ? `the same as ${what}` : `${Math.abs(p)}% ${p > 0 ? 'above' : 'below'} ${what}`);
+const leadingNumber = (s: string | null) => Number(/(\d+)/.exec(s ?? '')?.[1] ?? 0);
+
+// Five pointers per supplier: four facts and the ask (review, 18 Oct: "1, 2, 3, 4, 5 pointers", no script).
+const FACT_POINTERS = 4;
+
+/**
+ * One supplier's five pointers, one short line each: the first four facts that
+ * apply, in the meeting's order (should cost, market price, market trend, delivery
+ * record, the other quotes; then what we last paid, their last price to us,
+ * delivery time, terms and risk), and the discount to ask for: down to the
+ * nearest benchmark under the quote, 1–10% ("even 1% reduction").
+ */
+function strategyFor(v: RankedVendor, ranking: RankedVendor[], market: any, delivery: Map<string, DeliveryRecord>, qty: number | null) {
+	const facts: Point[] = [];
+	const add = (heading: string, text: string) => facts.push({ heading, text });
+	const benchmarks: { label: string; price: number }[] = [];
+
+	// Should cost ("should price is way lesser than quoted price").
+	const shouldCost = market.shouldCost?.available ? num(market.shouldCost.shouldCost) : null;
+	if (shouldCost) {
+		const p = pct(v.quotedPrice, shouldCost)!;
+		add('Should cost', p > 0
+			? `Quote is ${p}% above the should cost (${inr(shouldCost)}).`
+			: `Quote is ${rel(p, 'the should cost')} (${inr(shouldCost)}): press on terms, not price.`);
+		benchmarks.push({ label: 'the should cost', price: shouldCost });
+	}
+
+	// Market price ("current quoted price is this much, but the market price is this much"):
+	// India's reference price, else a listing that meets the specs from any market.
+	const online = market.online;
+	const listing = online?.fromListing;
+	if (online?.available && online.priceInr && !online.outOfRange && (online.comparable !== false || listing)) {
+		const vs = rel(pct(v.quotedPrice, online.priceInr)!, 'it');
+		add('Market price', !listing
+			? `${inr(online.priceInr)} in the market today; quote is ${vs}.`
+			: listing.currency === 'INR'
+				? `${inr(listing.priceInr)} on ${listing.source} (${listing.region}); quote is ${vs}.`
+				: `${listing.currency} ${Number(listing.price).toLocaleString('en-US')} on ${listing.source} (${listing.region}), about ${inr(listing.priceInr)} before freight and duty; quote is ${vs}.`);
+		// Only a price on a delivered basis like the quotes sets the ask.
+		if (online.comparable !== false) benchmarks.push({ label: 'the market price', price: Number(online.priceInr) });
+	}
+
+	// Market trend ("the expectation is that this cost is going down").
+	const c = market.commodity;
+	if (c?.available && c.change90dPct != null && Math.abs(c.change90dPct) >= 1) {
+		const share = c.exposurePct ? ` (about ${c.exposurePct}% of this item's cost)` : '';
+		add('Market trend', c.change90dPct < 0
+			? `${c.commodity} down ${Math.abs(c.change90dPct)}% in 90 days${share}: the price should come down.`
+			: `${c.commodity} up ${c.change90dPct}% in 90 days${share}: expect them to cite it.`);
+	}
+
+	// Delivery record ("previously your delivery timelines are bad"): a lever only when they were late.
+	const d = delivery.get(v.vendorId);
+	if (d && d.late > 0) {
+		add('Delivery record', `${d.late} of ${d.delivered} deliveries to us were late${d.avgDaysLate ? `, ${d.avgDaysLate} days on average` : ''}: ask for a penalty clause.`);
+	} else if (!d && v.otdPct != null && v.otdPct < 90) {
+		add('Delivery record', `${Math.round(v.otdPct)}% on-time delivery: ask for a penalty clause.`);
+	}
+
+	// Other quotes.
+	const others = ranking.filter(o => o.vendorId !== v.vendorId);
+	const lowest = [...others].sort((a, b) => a.quotedPrice - b.quotedPrice)[0];
+	if (lowest) {
+		add('Other quotes', lowest.quotedPrice < v.quotedPrice
+			? `${lowest.vendorName} (${lowest.tRank}) quoted ${inr(lowest.quotedPrice)}, ${round((1 - lowest.quotedPrice / v.quotedPrice) * 100, 1)}% less.`
+			: `Lowest quote; next is ${lowest.vendorName} at ${inr(lowest.quotedPrice)}.`);
+		benchmarks.push({ label: 'the lowest other quote', price: lowest.quotedPrice });
+	}
+
+	// What we last paid (no averages: review, 18 Oct), and their last price to us for this item.
+	const h = market.historical;
+	if (h?.lastPrice) {
+		add('Our last price', `We last paid ${inr(h.lastPrice)} (${h.lastDate}); quote is ${rel(pct(v.quotedPrice, h.lastPrice)!, 'that')}.`);
+		benchmarks.push({ label: 'what we last paid', price: Number(h.lastPrice) });
+	}
+	const own = (h?.pastSuppliers ?? []).find((s: any) => s.vendorId === v.vendorId);
+	if (own) {
+		add('Their last price', `They charged us ${inr(own.lastPrice)} on ${own.lastDate}; quote is ${rel(pct(v.quotedPrice, own.lastPrice)!, 'that')}.`);
+		benchmarks.push({ label: 'their last price to us', price: Number(own.lastPrice) });
+	}
+
+	// Delivery time, terms and risk.
+	const fastest = others.filter(o => o.deliveryDays != null).sort((a, b) => a.deliveryDays! - b.deliveryDays!)[0];
+	if (v.deliveryDays != null && fastest && fastest.deliveryDays! < v.deliveryDays) {
+		add('Delivery time', `${v.deliveryDays} days vs ${fastest.deliveryDays} from ${fastest.vendorName}: ask them to match.`);
+	}
+	const betterPay = others.filter(o => leadingNumber(o.paymentTerms) > leadingNumber(v.paymentTerms))
+		.sort((a, b) => leadingNumber(b.paymentTerms) - leadingNumber(a.paymentTerms))[0];
+	const longerWarranty = others.filter(o => (o.warrantyMonths ?? 0) > (v.warrantyMonths ?? 0))
+		.sort((a, b) => (b.warrantyMonths ?? 0) - (a.warrantyMonths ?? 0))[0];
+	const terms = [
+		betterPay && `${betterPay.vendorName} offers ${betterPay.paymentTerms}`,
+		longerWarranty && `${longerWarranty.vendorName} gives ${longerWarranty.warrantyMonths} months' warranty`,
+	].filter(Boolean);
+	if (terms.length) add('Terms', `${terms.join('; ')}: ask them to match.`);
+	const risks = [
+		v.qualityPct != null && v.qualityPct < 95 ? `${Math.round(v.qualityPct)}% quality acceptance` : null,
+		v.overallRisk === 'High' || v.financialRiskTier === 'High' ? 'high risk rating' : null,
+		v.sanctionsFlag ? 'sanctions flag' : null,
+	].filter(Boolean);
+	if (risks.length) add('Risk', `${risks.join(' and ')}: ask for guarantees.`);
+
+	const nearest = benchmarks
+		.filter(b => b.price > 0 && b.price < v.quotedPrice)
+		.map(b => ({ ...b, gap: (1 - b.price / v.quotedPrice) * 100 }))
+		.sort((a, b) => a.gap - b.gap)[0];
+	const askPct = Math.min(10, Math.max(1, Math.round((nearest?.gap ?? 1) * 2) / 2));
+	const targetPrice = round(v.quotedPrice * (1 - askPct / 100));
+	const saving = qty ? round((v.quotedPrice - targetPrice) * qty) : null;
+	const ask: NegotiationAsk = {
+		pct: askPct,
+		targetPrice,
+		saving,
+		basis: !nearest
+			? 'even 1% is worth asking for'
+			: nearest.gap > 10 ? `${nearest.label} is ${round(nearest.gap, 1)}% lower` : `in line with ${nearest.label}`,
+	};
+	return {
+		pointers: [
+			...facts.slice(0, FACT_POINTERS),
+			{ heading: 'Ask', text: `${askPct}% off, to ${inr(targetPrice)}${saving ? ` (saves ${inr(saving)})` : ''}: ${ask.basis}.` },
+		],
+		ask,
+	};
+}
+
+/**
+ * Pointers and the ask for every supplier, from our data only: a second or
+ * two, no model call. Uses today's web price and market search as far as
+ * they're in; the screen asks again once the market search finishes.
+ */
+async function negotiationPointers(run: Run, rfqId: string) {
+	const { rfq, vendors, market } = await marketStudy(run, rfqId, { cachedOnly: true });
+	const ranking = rankVendors(vendors, market);
+	const delivery = await deliveryRecords(run, ranking.map(v => v.vendorId));
+	return { rfq, items: ranking.map(v => ({ v, ...strategyFor(v, ranking, market, delivery, rfq.requestedQty) })) };
+}
+
+// ============================================================
 // Tool output shaping
 // ============================================================
 
 /** Chart series are for screens; the chat agent doesn't need 365 points. */
 function withoutSeries(market: any) {
-	const { series: _historicalSeries, ...historical } = market.historical ?? {};
+	const { series: _historicalSeries, orders: _historicalOrders, ...historical } = market.historical ?? {};
 	const { series: _commoditySeries, ...commodity } = market.commodity ?? {};
 	return { ...market, historical, commodity };
 }
 
 const marketSummary = (market: any) => ({
+	shouldCost: market.shouldCost?.summary,
 	historical: market.historical?.summary,
 	commodity: market.commodity?.summary,
 	onlinePrice: market.online?.note ? `${market.online.summary} ${market.online.note}` : market.online?.summary,
@@ -1075,7 +1437,7 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 			toolType: 'direct',
 			cache: false,
 			description:
-				'Market study for an RFQ without an AI recommendation: our historical purchase price for the material, its ' +
+				'Market study for an RFQ without an AI recommendation: the should cost (once entered), our historical purchase price for the material, its ' +
 				'commodity price trend, our rate-contract price, vendor sustainability, today\'s online price if already ' +
 				'fetched, and the technically accepted vendors ranked by T-rank and L-rank. Fast; makes no AI or web calls. ' +
 				'USE FOR: price benchmarks for an RFQ\'s material, "is this quote above what we usually pay", T/L ranking of ' +
@@ -1193,6 +1555,56 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 					{ name: 'currency', type: 'string', description: 'Currency of the price, e.g. INR, USD, EUR' },
 					{ name: 'unit', type: 'string', description: 'Price unit' },
 					{ name: 'meetsSpecs', type: 'string', description: 'Whether the listing\'s stated specs meet the PR: yes / nearly / no / unknown' },
+				],
+			},
+		},
+		{
+			id: 'get-rfq-negotiation-strategy',
+			name: 'Get RFQ Negotiation Strategy',
+			toolType: 'direct',
+			// The pointers follow today's market study as it fills in.
+			cache: false,
+			description:
+				'Negotiation pointers for the technically accepted suppliers on an RFQ: five per supplier, from our data (should cost, ' +
+				'today\'s market price, the commodity trend, the supplier\'s late deliveries to us, the other quotes, what we last paid, ' +
+				'delivery time, terms and risk), the last one the discount to ask for. Fast; makes no AI call. ' +
+				'USE FOR: "how should we negotiate with <supplier> on RFQ-…", negotiation points, the discount to ask for. ' +
+				'DO NOT USE FOR: choosing a supplier (use recommend-rfq-supplier).',
+			params: {
+				rfqId: 'string - the RFQ id, e.g. "RFQ-00015"',
+			},
+			fn: async (input: { rfqId?: string }) => {
+				const rfqId = requireRfqId(input);
+				if (!rfqId) return { error: 'A valid rfqId is required, e.g. "RFQ-00015".' };
+				try {
+					const started = Date.now();
+					const { rfq, items } = await negotiationPointers(run, rfqId);
+					const vendors = items.map(({ v, pointers, ask }) => ({
+						vendorId: v.vendorId, vendorName: v.vendorName, quotedPrice: v.quotedPrice, tRank: v.tRank, lRank: v.lRank, pointers, ask,
+					}));
+					console.log(`[RFQ-RECOMMENDATION] ${rfqId}: negotiation pointers for ${items.length} supplier(s) in ${Date.now() - started} ms`);
+					const rows = vendors.map((v: any) => ({
+						vendorName: v.vendorName, tRank: v.tRank, lRank: v.lRank, quotedPrice: v.quotedPrice,
+						askPct: v.ask.pct, targetPrice: v.ask.targetPrice, pointers: v.pointers.map((p: Point) => `${p.heading}: ${p.text}`).join(' '),
+					}));
+					return {
+						rfqId, material: rfq.materialDesc, unit: rfq.unit, quantity: rfq.requestedQty,
+						createdAt: new Date().toISOString(), vendors, data: rows, count: rows.length,
+					};
+				} catch (e) {
+					return { error: errMsg(e) };
+				}
+			},
+			outputSchema: {
+				description: 'Per technically accepted supplier: the discount to ask for, the target price and the negotiation pointers.',
+				fields: [
+					{ name: 'vendorName', type: 'string', description: 'Supplier' },
+					{ name: 'tRank', type: 'string', description: 'Technical rank T1 (best) to T4' },
+					{ name: 'lRank', type: 'string', description: 'Price rank among technically accepted vendors (L1 = cheapest)' },
+					{ name: 'quotedPrice', type: 'number', description: 'Quoted unit price (INR)' },
+					{ name: 'askPct', type: 'number', description: 'Discount to ask for, % off the quote (KPI)' },
+					{ name: 'targetPrice', type: 'number', description: 'Unit price after that discount (INR)' },
+					{ name: 'pointers', type: 'string', description: 'Negotiation pointers from our data' },
 				],
 			},
 		},
