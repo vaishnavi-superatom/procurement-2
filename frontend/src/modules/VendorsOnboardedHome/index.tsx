@@ -75,9 +75,9 @@ interface VendorRow {
 // ============================================================
 
 //local-tool id
-//const TOOL_ID = 'postgres-6a0f22831b3f_query';
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
 //prod-tool id
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 async function runTool<T = any>(sql: string, params: Record<string, any> | undefined, SA_RUNTIME: any): Promise<T[]> {

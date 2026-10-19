@@ -148,9 +148,9 @@ const RFQ_FILTER_DESCRIPTIONS: Record<RfqFilter, string> = {
 // ============================================================
 
 //local-tool id
-//const TOOL_ID = 'postgres-6a0f22831b3f_query';
+const TOOL_ID = 'postgres-6a0f22831b3f_query';
 //prod-tool id
-const TOOL_ID = 'postgres-0fc80d2496ff_query';
+//const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 const PR_LIST_QUERY = `
