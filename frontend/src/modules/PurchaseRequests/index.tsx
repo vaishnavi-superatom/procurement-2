@@ -62,6 +62,8 @@ interface PRListRow {
   first_material_id: string;
   first_material_desc: string | null;
   has_rfq: boolean;
+  /** Linked RFQ ids, comma-separated and sorted; null when there's none. */
+  rfq_ids: string | null;
 }
 
 interface PRLine {
@@ -146,14 +148,16 @@ const RFQ_FILTER_DESCRIPTIONS: Record<RfqFilter, string> = {
 // ============================================================
 
 //local-tool id
-const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//const TOOL_ID = 'postgres-6a0f22831b3f_query';
 //prod-tool id
-//const TOOL_ID = 'postgres-0fc80d2496ff_query';
+const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 const PR_LIST_QUERY = `
 WITH rfq_prs AS (
-  SELECT DISTINCT pr_id FROM rfq_events
+  SELECT pr_id, STRING_AGG(DISTINCT rfq_id, ', ' ORDER BY rfq_id) AS rfq_ids
+  FROM rfq_events
+  GROUP BY pr_id
 )
 SELECT
   pr.pr_id,
@@ -169,7 +173,8 @@ SELECT
   MIN(m.material_group) AS material_group,
   MIN(pr.material_id) AS first_material_id,
   MIN(m.material_desc) AS first_material_desc,
-  BOOL_OR(rp.pr_id IS NOT NULL) AS has_rfq
+  BOOL_OR(rp.pr_id IS NOT NULL) AS has_rfq,
+  MAX(rp.rfq_ids) AS rfq_ids
 FROM purchase_requisitions pr
 LEFT JOIN material_master m ON m.material_id = pr.material_id
 LEFT JOIN rfq_prs rp ON rp.pr_id = pr.pr_id
@@ -289,18 +294,35 @@ const UrgencyBadge: React.FC<{ urgency: string }> = ({ urgency }) => {
   );
 };
 
-const RfqBadge: React.FC<{ hasRfq: boolean }> = ({ hasRfq }) => (
-  <span
-    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
-    style={{
-      backgroundColor: hasRfq ? TEAL.tint : COLORS.lightGray,
-      color: hasRfq ? TEAL.base : COLORS.text.secondary,
-    }}
-  >
-    <Icon icon={hasRfq ? 'mdi:check-circle' : 'mdi:minus-circle-outline'} className="w-3 h-3" />
-    {hasRfq ? 'Received' : 'Not Received'}
-  </span>
-);
+// The linked RFQ's id (the first, with a "+N" count when there are several),
+// or a muted "Not received" pill when the PR has no RFQ yet.
+const RfqCell: React.FC<{ hasRfq: boolean; rfqIds: string | null }> = ({ hasRfq, rfqIds }) => {
+  const ids = (rfqIds || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!hasRfq || ids.length === 0) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
+        style={{ backgroundColor: COLORS.lightGray, color: COLORS.text.secondary }}
+      >
+        <Icon icon="mdi:minus-circle-outline" className="w-3 h-3" />
+        Not received
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap" title={ids.join(', ')}>
+      <span className="font-semibold tabular-nums" style={{ color: TEAL.base }}>{ids[0]}</span>
+      {ids.length > 1 && (
+        <span
+          className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
+          style={{ backgroundColor: TEAL.tint, color: TEAL.base }}
+        >
+          +{ids.length - 1}
+        </span>
+      )}
+    </span>
+  );
+};
 
 interface DropdownProps {
   label: string;
@@ -486,6 +508,7 @@ const PRListScreen: React.FC<{
       if (!q) return true;
       return (
         r.pr_id.toLowerCase().includes(q) ||
+        (r.rfq_ids || '').toLowerCase().includes(q) ||
         (r.requester_dept || '').toLowerCase().includes(q) ||
         (r.first_material_desc || '').toLowerCase().includes(q) ||
         (r.material_group || '').toLowerCase().includes(q) ||
@@ -583,7 +606,7 @@ const PRListScreen: React.FC<{
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search PR ID, department, material…"
+              placeholder="Search PR / RFQ ID, department, material…"
               className="text-xs w-56"
               style={{ color: COLORS.text.primary, border: 'none', outline: 'none', boxShadow: 'none', background: 'transparent' }}
             />
@@ -616,28 +639,32 @@ const PRListScreen: React.FC<{
         className="flex-1 min-h-0 rounded-xl overflow-auto"
         style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
       >
-        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
-          {/* Fixed column widths so content never triggers a table-wide
-              column-width recalculation (e.g. on row hover). */}
+        {/* Fixed column widths so content never triggers a table-wide
+            column-width recalculation (e.g. on row hover); minWidth so a narrow
+            container scrolls sideways instead of clipping the IDs. */}
+        <table
+          className="w-full text-sm border-collapse"
+          style={{ tableLayout: 'fixed', minWidth: showRfqColumn ? 1000 : 760 }}
+        >
           <colgroup>
-            <col style={{ width: showRfqColumn ? '110px' : '112px' }} />
+            <col style={{ width: '128px' }} />
             <col />
-            <col style={{ width: showRfqColumn ? '130px' : '108px' }} />
-            <col style={{ width: showRfqColumn ? '80px' : '64px' }} />
-            <col style={{ width: showRfqColumn ? '90px' : '76px' }} />
-            {showRfqColumn && <col style={{ width: '110px' }} />}
-            <col style={{ width: showRfqColumn ? '100px' : '136px' }} />
-            <col style={{ width: showRfqColumn ? '120px' : '105px' }} />
+            <col style={{ width: showRfqColumn ? '128px' : '112px' }} />
+            <col style={{ width: '72px' }} />
+            <col style={{ width: '100px' }} />
+            {showRfqColumn && <col style={{ width: '150px' }} />}
+            <col style={{ width: showRfqColumn ? '120px' : '136px' }} />
+            <col style={{ width: '128px' }} />
           </colgroup>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: COLORS.lightBackground }}>
             <tr>
               {(showRfqColumn
-                ? ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ', 'Required By', 'Value']
+                ? ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ ID', 'Required By', 'Value']
                 : ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ Required By', 'Value']
               ).map((h) => (
                 <th
                   key={h}
-                  className={`text-left ${cellPad} text-[11px] font-semibold uppercase tracking-wide truncate`}
+                  className={`${h === 'Value' ? 'text-right' : 'text-left'} ${cellPad} text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap`}
                   style={{ color: COLORS.text.secondary, borderBottom: `1px solid ${TEAL.border}` }}
                 >
                   {h}
@@ -671,25 +698,32 @@ const PRListScreen: React.FC<{
                       backgroundColor: hoveredId === row.pr_id ? TEAL.tint : 'transparent',
                     }}
                   >
-                    <td className={`${cellPad} font-semibold truncate`} style={{ color: COLORS.text.primary }}>
+                    <td className={`${cellPad} font-semibold whitespace-nowrap tabular-nums`} style={{ color: COLORS.text.primary }}>
                       {row.pr_id}
                     </td>
-                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.primary }}>
-                      {row.first_material_desc || row.first_material_id}
-                      {row.material_count > 1 && (
-                        <span className="ml-1.5 text-[11px]" style={{ color: COLORS.text.tertiary }}>
-                          +{row.material_count - 1} more
+                    <td className={cellPad} title={row.first_material_desc || row.first_material_id}>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate" style={{ color: COLORS.text.primary }}>
+                          {row.first_material_desc || row.first_material_id}
                         </span>
-                      )}
+                        {row.material_count > 1 && (
+                          <span
+                            className="flex-shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-semibold whitespace-nowrap"
+                            style={{ backgroundColor: COLORS.lightGray, color: COLORS.text.secondary }}
+                          >
+                            +{row.material_count - 1} more
+                          </span>
+                        )}
+                      </div>
                     </td>
-                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>{row.requester_dept}</td>
-                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>{row.plant_code}</td>
-                    <td className={cellPad}><UrgencyBadge urgency={row.urgency} /></td>
+                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }} title={row.requester_dept}>{row.requester_dept}</td>
+                    <td className={`${cellPad} whitespace-nowrap`} style={{ color: COLORS.text.secondary }}>{row.plant_code}</td>
+                    <td className={`${cellPad} whitespace-nowrap`}><UrgencyBadge urgency={row.urgency} /></td>
                     {showRfqColumn && (
-                      <td className={cellPad}><RfqBadge hasRfq={Boolean(row.has_rfq)} /></td>
+                      <td className={cellPad}><RfqCell hasRfq={Boolean(row.has_rfq)} rfqIds={row.rfq_ids} /></td>
                     )}
-                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }}>{formatDate(row.required_date)}</td>
-                    <td className={`${cellPad} font-medium truncate`} style={{ color: COLORS.text.primary }}>{formatINR(row.total_value)}</td>
+                    <td className={`${cellPad} whitespace-nowrap`} style={{ color: COLORS.text.secondary }}>{formatDate(row.required_date)}</td>
+                    <td className={`${cellPad} font-medium text-right whitespace-nowrap tabular-nums`} style={{ color: COLORS.text.primary }}>{formatINR(row.total_value)}</td>
                   </tr>
                 ))}
               </React.Fragment>

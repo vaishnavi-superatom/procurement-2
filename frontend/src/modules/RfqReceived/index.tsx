@@ -119,9 +119,9 @@ const TIME_FILTER_OPTIONS: TimeFilter[] = ['All Time', 'Today', 'This Week', 'Th
 // ============================================================
 
 //local-tool id
-const TOOL_ID = 'postgres-6a0f22831b3f_query';
+//const TOOL_ID = 'postgres-6a0f22831b3f_query';
 //prod-tool id
-//const TOOL_ID = 'postgres-0fc80d2496ff_query';
+const TOOL_ID = 'postgres-0fc80d2496ff_query';
 const TOOL_NAME = 'Query PostgreSQL Connection';
 
 const RFQ_LIST_QUERY = `
@@ -472,24 +472,33 @@ const RfqListScreen: React.FC<{
         className="flex-1 min-h-0 rounded-xl overflow-auto"
         style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
       >
-        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
+        {/* minWidth: in a narrow container the table scrolls sideways instead of
+            squeezing columns until the IDs are clipped. */}
+        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: 880 }}>
           <colgroup>
-            <col style={{ width: '100px' }} />
+            <col style={{ width: '140px' }} />
             <col />
-            <col style={{ width: '84px' }} />
-            <col style={{ width: '84px' }} />
-            <col style={{ width: '100px' }} />
             <col style={{ width: '120px' }} />
+            <col style={{ width: '96px' }} />
+            <col style={{ width: '120px' }} />
+            <col style={{ width: '140px' }} />
           </colgroup>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: COLORS.lightBackground }}>
             <tr>
-              {['RFQ ID', 'Linked PR', 'Invited', 'Quotes', 'Deadline', 'Status'].map((h) => (
+              {[
+                { label: 'RFQ ID', align: 'text-left' },
+                { label: 'Material', align: 'text-left' },
+                { label: 'Linked PR', align: 'text-left' },
+                { label: 'Quotes', align: 'text-right' },
+                { label: 'Deadline', align: 'text-left' },
+                { label: 'Status', align: 'text-left' },
+              ].map((h) => (
                 <th
-                  key={h}
-                  className="text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wide leading-tight"
+                  key={h.label}
+                  className={`${h.align} px-4 py-3 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap`}
                   style={{ color: COLORS.text.secondary, borderBottom: `1px solid ${TEAL.border}` }}
                 >
-                  {h}
+                  {h.label}
                 </th>
               ))}
             </tr>
@@ -507,19 +516,35 @@ const RfqListScreen: React.FC<{
                   backgroundColor: hoveredId === row.rfq_id ? TEAL.tint : 'transparent',
                 }}
               >
-                <td className="px-4 py-3 font-semibold truncate" style={{ color: COLORS.text.primary }}>
-                  {row.rfq_id}
-                </td>
-                <td className="px-4 py-3" style={{ color: COLORS.text.primary }}>
-                  <div className="font-medium truncate">{row.pr_id}</div>
-                  <div className="text-[11px] truncate" style={{ color: COLORS.text.tertiary }}>
-                    {row.material_desc || row.material_id}
+                <td className="px-4 py-3 align-top">
+                  <div className="font-semibold whitespace-nowrap tabular-nums" style={{ color: TEAL.base }} title={row.rfq_id}>
+                    {row.rfq_id}
+                  </div>
+                  <div className="text-[11px] mt-0.5 whitespace-nowrap" style={{ color: COLORS.text.tertiary }}>
+                    {formatDate(row.rfq_date)}
                   </div>
                 </td>
-                <td className="px-4 py-3 truncate" style={{ color: COLORS.text.secondary }}>{row.vendors_invited}</td>
-                <td className="px-4 py-3 truncate" style={{ color: COLORS.text.secondary }}>{row.quotes_received}</td>
-                <td className="px-4 py-3 truncate" style={{ color: COLORS.text.secondary }}>{formatDate(row.response_deadline)}</td>
-                <td className="px-4 py-3"><RfqStatusBadge status={row.rfq_status} /></td>
+                <td className="px-4 py-3 align-top" title={row.material_desc || row.material_id}>
+                  <div className="font-medium truncate" style={{ color: COLORS.text.primary }}>
+                    {row.material_desc || row.material_id}
+                  </div>
+                  {row.material_desc && (
+                    <div className="text-[11px] mt-0.5 truncate tabular-nums" style={{ color: COLORS.text.tertiary }}>
+                      {row.material_id}
+                    </div>
+                  )}
+                </td>
+                <td className="px-4 py-3 align-top whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>
+                  {row.pr_id}
+                </td>
+                <td className="px-4 py-3 align-top text-right whitespace-nowrap tabular-nums" title="Quotes received / vendors invited">
+                  <span className="font-semibold" style={{ color: COLORS.text.primary }}>{row.quotes_received}</span>
+                  <span style={{ color: COLORS.text.tertiary }}> / {row.vendors_invited}</span>
+                </td>
+                <td className="px-4 py-3 align-top whitespace-nowrap" style={{ color: COLORS.text.secondary }}>
+                  {formatDate(row.response_deadline)}
+                </td>
+                <td className="px-4 py-3 align-top whitespace-nowrap"><RfqStatusBadge status={row.rfq_status} /></td>
               </tr>
             ))}
             {filtered.length === 0 && (

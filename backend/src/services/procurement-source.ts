@@ -3,7 +3,10 @@ import { getSourceManager } from '../sources/core/source-manager';
 
 // The procurement data source (Neon): the same one the PR and RFQ screens
 // query (TOOL_ID in frontend modules/PurchaseRequests).
-export const PROCUREMENT_SOURCE_ID = 'postgres-6a0f22831b3f';
+//local-source id
+//export const PROCUREMENT_SOURCE_ID = 'postgres-6a0f22831b3f';
+//prod-source id
+export const PROCUREMENT_SOURCE_ID = 'postgres-0fc80d2496ff';
 
 /**
  * Run fixed, server-built SQL against the procurement source as a system flow.
