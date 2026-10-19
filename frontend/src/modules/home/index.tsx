@@ -318,43 +318,12 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
   const kpis = KPI_META.map((meta) => ({ ...meta, value: kpiValues[meta.label] }));
 
-  // Total PRs Raised opens the Purchase Requests table on its own, at the top of
-  // the content area (like the Purchase Requisitions page), not under the cards.
-  const prViewRef = useRef<HTMLDivElement>(null);
+  // Total PRs Raised opens its table below the cards, like every other card, and scrolls to it.
+  const prBlockRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (showPRList) scrollToSection(prViewRef.current);
+    if (showPRList) scrollToSection(prBlockRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showPRList]);
-
-  if (showPRList) {
-    return (
-      <div
-        ref={prViewRef}
-        className="w-full max-w-[1120px] mx-auto"
-        style={{ fontFamily: TYPOGRAPHY.fontFamily.primary, paddingTop: SPACING.xl }}
-      >
-        <button
-          type="button"
-          onClick={() => setShowPRList(false)}
-          className="inline-flex items-center gap-1 mb-3 text-xs font-medium"
-          style={{ color: TEAL.base }}
-        >
-          <Icon icon="mdi:arrow-left" className="w-4 h-4" />
-          Procurement at a Glance
-        </button>
-        <PurchaseRequests
-          SA_RUNTIME={SA_RUNTIME}
-          simplifiedToolbar
-          showRfqColumn
-          activePeriod={period}
-          // Evaluating a PR's RFQ goes back to the dashboard, where the RFQ list opens.
-          onEvaluateRfq={(args) => {
-            setShowPRList(false);
-            handleEvaluateRfq(args);
-          }}
-        />
-      </div>
-    );
-  }
 
   return (
     <div
@@ -490,7 +459,18 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
         })}
       </div>
 
-      {/* Total PRs Raised opens its own view (above), not a block here. */}
+      {/* Total PRs Raised → Purchase Requests list, inline below, same screen */}
+      {showPRList && (
+        <div className="mt-8" ref={prBlockRef} style={{ scrollMarginTop: 12 }}>
+          <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
+          <div
+            className="mt-6 rounded-lg p-4"
+            style={{ backgroundColor: COLORS.white, border: `1px solid ${TEAL.border}`, boxShadow: SHADOWS.card }}
+          >
+            <PurchaseRequests SA_RUNTIME={SA_RUNTIME} simplifiedToolbar showRfqColumn activePeriod={period} onEvaluateRfq={handleEvaluateRfq} />
+          </div>
+        </div>
+      )}
 
       {/* RFQs received → RFQ list, inline below, same screen (same pattern as Total PRs Raised) */}
       {showRfqList && (
