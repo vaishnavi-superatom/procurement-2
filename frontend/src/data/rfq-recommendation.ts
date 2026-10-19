@@ -140,6 +140,9 @@ export interface MarketSearch {
 
 export interface CommodityFeed {
   available: boolean;
+  /** Every commodity_prices series is generated demo data. */
+  dataStatus?: 'synthetic';
+  source?: string;
   commodity?: string;
   unit?: string;
   latestPrice?: number;
@@ -218,6 +221,10 @@ export interface IndexMove {
 
 export interface IndexComparison {
   available: boolean;
+  /** 'benchmark': coal and coke, see MarketInputs.benchmark.index; 'synthetic': the generated demo series. */
+  mode?: 'benchmark' | 'synthetic';
+  dataStatus?: 'synthetic';
+  source?: string;
   baseline?: { date: string; price: number };
   rfqDate?: string;
   indices?: IndexMove[];
@@ -226,12 +233,79 @@ export interface IndexComparison {
   summary: string;
 }
 
+/** One window of the verified benchmark between a past price and this RFQ. */
+export interface BenchmarkWindow {
+  measurable: boolean;
+  reason?: string;
+  fromObservation?: string;
+  toObservation?: string;
+  fromPrice?: number;
+  toPrice?: number;
+  benchmarkChangePct?: number;
+  /** Commodity share × benchmark change: the commodity-driven cost impact. */
+  commodityImpactPct?: number | null;
+}
+
+/** Verified external commodity benchmark for a coal or coke material (never the synthetic series). */
+export interface MarketBenchmark {
+  mapped: boolean;
+  available?: boolean;
+  status?: string;
+  commodity?: string;
+  commodityLabel?: string;
+  summary: string;
+  benchmark?: {
+    id: string;
+    name: string;
+    provider: string;
+    specification: string | null;
+    location: string | null;
+    deliveryBasis: string | null;
+    sourceUrl: string;
+    datasetVersion: string | null;
+    dataStatus: 'verified_external' | 'authorized_import';
+    frequency: string;
+  };
+  latest?: {
+    observationDate: string;
+    periodLabel: string | null;
+    price: number;
+    currency: string;
+    unit: string;
+    priceInrPerMt: number | null;
+    fxInrPerUnit: number | null;
+    fxBasis: string | null;
+    retrievedAt: string;
+    freshness: { daysOld: number; status: 'current' | 'aging' | 'stale' };
+  };
+  atRfq?: { observationDate: string; periodLabel: string | null; price: number; priceInrPerMt: number | null; fxBasis: string | null } | null;
+  history?: { date: string; price: number; priceInrPerMt: number | null }[];
+  movements?: { label: string; from: string | null; to: string; changePct: number | null }[];
+  direction?: 'rising' | 'falling' | 'stable' | null;
+  comparability?: { status: 'direct' | 'reference'; label: string; notes: string[] };
+  commoditySharePct?: number | null;
+  suppliers?: { vendorId: string; vendorName: string; tRank: string | null; quotedPrice: number; benchmarkInr: number | null; differenceInr: number | null; differencePct: number | null; comparability: string }[];
+  index?: {
+    overall: (BenchmarkWindow & { baselineDate: string; baselinePrice: number }) | null;
+    perSupplier: (BenchmarkWindow & {
+      vendorId: string; vendorName: string; tRank: string | null; quotedPrice: number;
+      lastPrice?: number; lastDate?: string; quoteChangePct?: number; unexplainedPts?: number | null;
+    })[];
+  };
+  insights?: string[];
+  limitations?: string[];
+  alternatives?: string[];
+  providers?: { provider: string; status: string; message: string | null; at: string | null }[];
+}
+
 export interface MarketInputs {
   /** Missing in recommendations saved before 18 Oct. */
   shouldCost?: ShouldCost;
   /** Missing in recommendations saved before 19 Oct. */
   costSplit?: CostSplit;
   index?: IndexComparison;
+  /** Missing in recommendations saved before the benchmark integration. */
+  benchmark?: MarketBenchmark;
   historical: HistoricalPrice;
   commodity: CommodityFeed;
   online: OnlinePrice;
@@ -348,6 +422,10 @@ async function runDirectTool<T>(toolId: string, toolName: string, parameters: Re
 /** Our past prices, the commodity trend and today's online price if already found. Fast. */
 export const getMarketStudy = (rfqId: string, SA_RUNTIME: unknown): Promise<MarketStudy> =>
   runDirectTool('get-rfq-market-study', 'Get RFQ Market Study', { rfqId, includeSeries: true }, SA_RUNTIME);
+
+/** Fetches verified external commodity benchmarks (World Bank; Trading Economics when keyed). Skips current data. */
+export const refreshMarketBenchmarks = (SA_RUNTIME: unknown): Promise<{ ok: boolean; message: string; providers: { provider: string; status: string; message: string; rows: number }[] }> =>
+  runDirectTool('refresh-market-benchmarks', 'Refresh Market Benchmarks', {}, SA_RUNTIME);
 
 /** Searches the web for the material's current price (~15–30 s; cached for the day). */
 export const getOnlinePrice = (rfqId: string, SA_RUNTIME: unknown): Promise<OnlinePrice> =>

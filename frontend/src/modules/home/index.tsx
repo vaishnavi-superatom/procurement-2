@@ -135,6 +135,29 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
   const negotiationBlockRef = useRef<HTMLDivElement>(null);
   const approvalBlockRef = useRef<HTMLDivElement>(null);
   const awardBlockRef = useRef<HTMLDivElement>(null);
+  const negotiationsListRef = useRef<HTMLDivElement>(null);
+  const vendorsListRef = useRef<HTMLDivElement>(null);
+  const approvedListRef = useRef<HTMLDivElement>(null);
+
+  // A card opens its table below the cards; bring that table to the top of the
+  // view so nobody has to scroll down to find it. Only on opening, not closing.
+  const scrollToSection = (el: HTMLElement | null) => {
+    if (!el) return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  };
+  useEffect(() => {
+    if (showRfqList) scrollToSection(rfqBlockRef.current);
+  }, [showRfqList]);
+  useEffect(() => {
+    if (showNegotiationsList) scrollToSection(negotiationsListRef.current);
+  }, [showNegotiationsList]);
+  useEffect(() => {
+    if (showVendorsList) scrollToSection(vendorsListRef.current);
+  }, [showVendorsList]);
+  useEffect(() => {
+    if (showApprovedRfqsList) scrollToSection(approvedListRef.current);
+  }, [showApprovedRfqsList]);
 
   // Scenario 2: a PR's "Evaluate RFQ(s)" opens the RFQ experience focused on
   // its linked RFQ. focusToken forces RfqReceived to re-jump even if the same
@@ -299,7 +322,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
   // the content area (like the Purchase Requisitions page), not under the cards.
   const prViewRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (showPRList) prViewRef.current?.scrollIntoView({ block: 'start' });
+    if (showPRList) scrollToSection(prViewRef.current);
   }, [showPRList]);
 
   if (showPRList) {
@@ -471,7 +494,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
       {/* RFQs received → RFQ list, inline below, same screen (same pattern as Total PRs Raised) */}
       {showRfqList && (
-        <div className="mt-8" ref={rfqBlockRef}>
+        <div className="mt-8" ref={rfqBlockRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div
             className="mt-6 rounded-lg p-4"
@@ -492,7 +515,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
       {/* Start Negotiation → negotiation workspace, inline below, same screen. It draws its own boxes:
           the negotiation, then the market study and the strategy as new boxes below (review, 19 Oct). */}
       {showNegotiation && negotiationContext && (
-        <div className="mt-8" ref={negotiationBlockRef}>
+        <div className="mt-8" ref={negotiationBlockRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div className="mt-6">
             <ActiveNegotiations
@@ -510,7 +533,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
       {/* Proceed to Approval → approval workspace, inline below, same screen */}
       {approvalContext && (
-        <div className="mt-8" ref={approvalBlockRef}>
+        <div className="mt-8" ref={approvalBlockRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div
             className="mt-6 rounded-lg p-4"
@@ -531,7 +554,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
       {/* Active Negotiations card → negotiations list, inline below, same screen */}
       {showNegotiationsList && (
-        <div className="mt-8">
+        <div className="mt-8" ref={negotiationsListRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div
             className="mt-6 rounded-lg p-4"
@@ -544,7 +567,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
       {/* Vendors card → vendor directory and profiles, inline below, same screen */}
       {showVendorsList && (
-        <div className="mt-8">
+        <div className="mt-8" ref={vendorsListRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div
             className="mt-6 rounded-lg p-4"
@@ -557,7 +580,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
       {/* Approved RFQs card → approved RFQs list, inline below, same screen */}
       {showApprovedRfqsList && (
-        <div className="mt-8">
+        <div className="mt-8" ref={approvedListRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div
             className="mt-6 rounded-lg p-4"
@@ -570,7 +593,7 @@ const Home: React.FC<HomeProps> = ({ SA_RUNTIME }) => {
 
       {/* An approved RFQ's row → its read-only award details, inline below, same screen */}
       {awardContext && (
-        <div className="mt-8" ref={awardBlockRef}>
+        <div className="mt-8" ref={awardBlockRef} style={{ scrollMarginTop: 12 }}>
           <div style={{ borderTop: `1px solid ${TEAL.border}` }} />
           <div
             className="mt-6 rounded-lg p-4"

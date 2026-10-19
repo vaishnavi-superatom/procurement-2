@@ -195,7 +195,7 @@ export const SelectSupplierList: React.FC<{
               <th
                 key={i}
                 title={RANK_HELP[h]}
-                className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
+                className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide align-bottom"
                 style={{ color: COLORS.text.secondary }}
               >
                 {h}
@@ -219,7 +219,7 @@ export const SelectSupplierList: React.FC<{
                 className="cursor-pointer"
                 style={{ borderTop: `1px solid ${COLORS.lightGray}`, backgroundColor: checked ? TEAL.tint : 'transparent' }}
               >
-                <td className="px-4 py-2">
+                <td className="px-3 py-2">
                   <input
                     type="radio"
                     name={`select-supplier-${rfqId}`}
@@ -230,8 +230,8 @@ export const SelectSupplierList: React.FC<{
                     aria-label={`Select ${v.vendorName}`}
                   />
                 </td>
-                <td className="px-4 py-2"><AiRankBadge rank={i + 1} /></td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                <td className="px-3 py-2"><AiRankBadge rank={i + 1} /></td>
+                <td className="px-3 py-2" style={{ color: COLORS.text.primary }}>
                   <span className="font-medium">{v.vendorName}</span>
                   {recommended && (
                     <span className="ml-2 px-1.5 py-0.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: TEAL.base, color: COLORS.white }}>
@@ -239,10 +239,10 @@ export const SelectSupplierList: React.FC<{
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-2"><TRankBadge rank={v.tRank} /></td>
-                <td className="px-4 py-2"><LRankBadge rank={v.lRank} /></td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>{formatINR(v.quotedPrice)}</td>
-                <td className="px-4 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{v.deliveryDays} days</td>
+                <td className="px-3 py-2"><TRankBadge rank={v.tRank} /></td>
+                <td className="px-3 py-2"><LRankBadge rank={v.lRank} /></td>
+                <td className="px-3 py-2" style={{ color: COLORS.text.primary }}>{formatINR(v.quotedPrice)}</td>
+                <td className="px-3 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{v.deliveryDays} days</td>
               </tr>
               {checked && (
                 <tr style={{ backgroundColor: TEAL.tint }}>

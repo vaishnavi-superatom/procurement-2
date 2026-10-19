@@ -11,6 +11,7 @@ import {
   aiRankByVendor,
   getMarketSearch,
   getMarketStudy,
+  refreshMarketBenchmarks,
   getNegotiationStrategy,
   getOnlinePrice,
   RANK_HELP,
@@ -229,6 +230,8 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   // Prices and suppliers per market (card ③); runs alongside, the recommendation doesn't wait for it.
   const [marketSearch, setMarketSearch] = useState<MarketSearch | null>(null);
   const [marketSearchLoading, setMarketSearchLoading] = useState(false);
+  // Verified commodity benchmarks being fetched (World Bank, etc.); the study re-reads them when done.
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false);
   const [rec, setRec] = useState<SupplierRecommendation | null>(null);
   const [recLoading, setRecLoading] = useState(false);
   const [recError, setRecError] = useState<string | null>(null);
@@ -263,6 +266,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
     setOnlineLoading(false);
     setMarketSearch(null);
     setMarketSearchLoading(false);
+    setBenchmarkLoading(false);
     setRec(null);
     setRecLoading(false);
     setRecError(null);
@@ -295,6 +299,18 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         marketSearchPendingRef.current = false;
         setMarketSearchLoading(false);
       });
+
+    // Verified commodity benchmarks: fetched only when a provider has newer data, then read into the study.
+    setBenchmarkLoading(true);
+    refreshMarketBenchmarks(SA_RUNTIME)
+      .catch(() => null)
+      .then(() => getMarketStudy(rfqId, SA_RUNTIME))
+      .then((study) => {
+        if (!current() || !study?.market) return;
+        setMarket((prev) => (prev ? { ...prev, benchmark: study.market.benchmark, index: study.market.index } : study.market));
+      })
+      .catch(() => null)
+      .finally(() => current() && setBenchmarkLoading(false));
 
     if (refresh) {
       setMarket(null);
@@ -625,11 +641,11 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
           <table className="w-full text-sm">
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                {['Vendor', 'T-Rank', 'L-Rank', 'System Rank', 'Risk', 'Quoted Price', 'Award Qty', 'Award Value', ''].map((h) => (
+                {['Vendor', 'T-Rank', 'L-Rank', 'System Rank', 'Risk', 'Quoted Price', 'Award Qty', 'Award Value'].map((h) => (
                   <th
                     key={h}
                     title={RANK_HELP[h]}
-                    className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
+                    className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide align-bottom"
                     style={{ color: COLORS.text.secondary }}
                   >
                     {h}
@@ -644,34 +660,19 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             </thead>
             <tbody>
               <tr style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                <td className="px-3 py-2" style={{ color: COLORS.text.primary }}>
                   <span className="font-medium">{selectedQuote.vendor_name || selectedQuote.vendor_id}</span>
                   <div className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
                     {[selectedQuote.vendor_type, [selectedQuote.city, selectedQuote.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
                   </div>
                 </td>
-                <td className="px-4 py-2"><TRankBadge rank={selectedQuote.t_rank} /></td>
-                <td className="px-4 py-2"><LRankBadge rank={selectedQuote.l_rank} /></td>
-                <td className="px-4 py-2"><AiRankBadge rank={aiRanks.get(selectedQuote.vendor_id)} /></td>
-                <td className="px-4 py-2"><RiskBadge tier={selectedQuote.overall_risk} /></td>
-                <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(selectedQuote.quoted_price)}</td>
-                <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{awardQty} {prLine.unit_of_measure}</td>
-                <td className="px-4 py-2 font-semibold" style={{ color: COLORS.text.primary }}>{formatINR(awardValue)}</td>
-                <td className="px-4 py-2 text-right">
-                  <button
-                    disabled={awardQty <= 0}
-                    onClick={() => onProceedToApproval?.({ prId: prLine.pr_id, rfqId: rfqId!, materialId: prLine.material_id, vendorId: selectedQuote.vendor_id })}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap"
-                    style={{
-                      backgroundColor: awardQty > 0 ? TEAL.base : COLORS.lightGray,
-                      color: awardQty > 0 ? COLORS.white : COLORS.text.tertiary,
-                      cursor: awardQty > 0 ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    <Icon icon="mdi:send-outline" className="w-3.5 h-3.5" />
-                    Send for Approval
-                  </button>
-                </td>
+                <td className="px-3 py-2"><TRankBadge rank={selectedQuote.t_rank} /></td>
+                <td className="px-3 py-2"><LRankBadge rank={selectedQuote.l_rank} /></td>
+                <td className="px-3 py-2"><AiRankBadge rank={aiRanks.get(selectedQuote.vendor_id)} /></td>
+                <td className="px-3 py-2"><RiskBadge tier={selectedQuote.overall_risk} /></td>
+                <td className="px-3 py-2 font-medium whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>{formatINR(selectedQuote.quoted_price)}</td>
+                <td className="px-3 py-2 whitespace-nowrap tabular-nums" style={{ color: COLORS.text.secondary }}>{awardQty} {prLine.unit_of_measure}</td>
+                <td className="px-3 py-2 font-semibold whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>{formatINR(awardValue)}</td>
               </tr>
             </tbody>
           </table>
@@ -679,7 +680,23 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
 
           <div className="px-4 py-3 flex items-center justify-between" style={{ backgroundColor: COLORS.lightBackground }}>
             <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>Total Award Value</span>
-            <p className="text-lg font-bold" style={{ color: TEAL.base }}>{formatINR(awardValue)}</p>
+            {/* The next step sits with the total, so the table above stays narrow enough not to scroll sideways. */}
+            <div className="flex items-center gap-3">
+              <p className="text-lg font-bold" style={{ color: TEAL.base }}>{formatINR(awardValue)}</p>
+              <button
+                disabled={awardQty <= 0}
+                onClick={() => onProceedToApproval?.({ prId: prLine.pr_id, rfqId: rfqId!, materialId: prLine.material_id, vendorId: selectedQuote.vendor_id })}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap"
+                style={{
+                  backgroundColor: awardQty > 0 ? TEAL.base : COLORS.lightGray,
+                  color: awardQty > 0 ? COLORS.white : COLORS.text.tertiary,
+                  cursor: awardQty > 0 ? 'pointer' : 'not-allowed',
+                }}
+              >
+                <Icon icon="mdi:send-outline" className="w-3.5 h-3.5" />
+                Send for Approval
+              </button>
+            </div>
           </div>
         </div>
 
@@ -797,7 +814,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                   <th
                     key={h}
                     title={RANK_HELP[h]}
-                    className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
+                    className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide align-bottom"
                     style={{ color: COLORS.text.secondary }}
                   >
                     {h}
@@ -821,7 +838,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                       backgroundColor: picked ? TEAL.tint : 'transparent',
                     }}
                   >
-                    <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                    <td className="px-3 py-2" style={{ color: COLORS.text.primary }}>
                       <span className="font-medium">{q.vendor_name || q.vendor_id}</span>
                       {q.is_awarded && (
                         <span
@@ -835,13 +852,13 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                         {[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
                       </div>
                     </td>
-                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.delivery_days} days</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
-                    <td className="px-4 py-2"><TRankBadge rank={q.t_rank} /></td>
-                    <td className="px-4 py-2"><LRankBadge rank={q.l_rank} /></td>
+                    <td className="px-3 py-2 font-medium whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
+                    <td className="px-3 py-2" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{q.delivery_days} days</td>
+                    <td className="px-3 py-2" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
+                    <td className="px-3 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
+                    <td className="px-3 py-2"><TRankBadge rank={q.t_rank} /></td>
+                    <td className="px-3 py-2"><LRankBadge rank={q.l_rank} /></td>
                   </tr>
                 );
               })}
@@ -883,6 +900,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             onlineLoading={onlineLoading}
             marketSearch={marketSearch}
             marketSearchLoading={marketSearchLoading}
+            benchmarkLoading={benchmarkLoading}
             error={marketError}
             quotes={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank, price: Number(q.quoted_price) }))}
             productName={prLine.material_desc || prLine.material_id}

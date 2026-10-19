@@ -52,6 +52,10 @@
 import { LLM, getRequestContext } from '@superatomai/sdk-node';
 import type { SourceTool } from '../../../sources/core/types';
 import type { ExecuteFn } from '../index';
+import { commodityIntelligence, importBenchmarks, MATERIAL_BENCHMARK_MAP, refreshBenchmarks } from './market-benchmarks';
+
+/** Every series in commodity_prices was written by the demo data generator: never present it as market data. */
+const SYNTHETIC_SOURCE = 'Synthetic demo series (data generator), not market data';
 
 const RECOMMENDATION_MODEL = process.env.SA_RECOMMENDATION_MODEL || 'openrouter/typesafe/jev-router';
 // ':online' turns on OpenRouter's web search for the request.
@@ -396,7 +400,9 @@ async function commodityFeed(run: Run, rfq: RfqFacts) {
 		available: true,
 		commodity: rfq.primaryCommodity,
 		unit,
-		source: rows[0].source,
+		// The rows say "Market Index API"; they were generated, so say that instead.
+		source: SYNTHETIC_SOURCE,
+		dataStatus: 'synthetic',
 		latestPrice: round(latest.price),
 		latestDate: latest.date,
 		change30dPct,
@@ -405,7 +411,7 @@ async function commodityFeed(run: Run, rfq: RfqFacts) {
 		exposurePct: exposure !== null ? round(exposure * 100, 0) : null,
 		costImpact90dPct: impactPct,
 		series,
-		summary: `${rfq.primaryCommodity} at ${inr(latest.price)} ${unit} (${latest.date}), ${change90dPct! >= 0 ? '+' : ''}${change90dPct}% over 90 days`
+		summary: `${SYNTHETIC_SOURCE}: ${rfq.primaryCommodity} at ${inr(latest.price)} ${unit} (${latest.date}), ${change90dPct! >= 0 ? '+' : ''}${change90dPct}% over 90 days`
 			+ (impactPct !== null && exposure
 				? `; with ${round(exposure * 100, 0)}% exposure that is about ${impactPct >= 0 ? '+' : ''}${impactPct}% on this material's cost.`
 				: '.'),
@@ -439,6 +445,10 @@ function costSplit(rfq: RfqFacts) {
  * of the cost moves with its index (an 8% rise at a 60% share is about 4.8%, not 8%).
  */
 async function indexComparison(run: Run, rfq: RfqFacts, historical: { lastPrice: number | null; lastDate: string | null }) {
+	// Coal and coke: only verified market benchmarks (market.benchmark.index), never the demo series.
+	if (MATERIAL_BENCHMARK_MAP.bySubgroup[rfq.materialSubgroup]) {
+		return { available: false, mode: 'benchmark', summary: 'Uses the verified market benchmark (Commodity Market Intelligence), not the synthetic demo series.' };
+	}
 	const split = costSplit(rfq);
 	if (!split.available) return { available: false, summary: split.summary };
 	if (historical.lastPrice === null || !historical.lastDate) {
@@ -477,8 +487,11 @@ async function indexComparison(run: Run, rfq: RfqFacts, historical: { lastPrice:
 		indices,
 		expectedEffectPct,
 		indexExplainedPrice: expectedEffectPct !== null ? round(historical.lastPrice * (1 + expectedEffectPct / 100)) : null,
+		mode: 'synthetic',
+		dataStatus: 'synthetic',
+		source: SYNTHETIC_SOURCE,
 		summary: expectedEffectPct !== null
-			? `Since our last purchase (${inr(historical.lastPrice)} on ${historical.lastDate}), the commodity indices explain about ${expectedEffectPct >= 0 ? '+' : ''}${expectedEffectPct}% on this material's cost.`
+			? `${SYNTHETIC_SOURCE}. Since our last purchase (${inr(historical.lastPrice)} on ${historical.lastDate}), the commodity indices explain about ${expectedEffectPct >= 0 ? '+' : ''}${expectedEffectPct}% on this material's cost.`
 			: 'Commodity index prices are missing for part of the period.',
 	};
 }
@@ -945,6 +958,26 @@ async function contractBenchmark(run: Run, rfq: RfqFacts, vendors: VendorQuote[]
 }
 
 /** Steps 1–2 together: the facts plus all five market inputs. */
+/** Verified commodity benchmark for the material, from stored observations (no provider call here). */
+async function marketBenchmark(run: Run, rfq: RfqFacts, vendors: VendorQuote[], historical: any) {
+	try {
+		return await commodityIntelligence(run, {
+			materialId: rfq.materialId,
+			materialSubgroup: rfq.materialSubgroup,
+			unit: rfq.unit,
+			rfqDate: rfq.rfqDate,
+			prId: rfq.prId,
+			commodityPct: rfq.commodityPct,
+			vendors: vendors.filter(v => v.eligible).map(v => ({ vendorId: v.vendorId, vendorName: v.vendorName, quotedPrice: v.quotedPrice, tRank: v.tRank })),
+			pastSuppliers: (historical.pastSuppliers ?? []).map((s: any) => ({ vendorId: s.vendorId, vendorName: s.vendorName, lastPrice: Number(s.lastPrice), lastDate: s.lastDate })),
+			lastPurchase: historical.lastPrice !== null && historical.lastDate ? { price: Number(historical.lastPrice), date: historical.lastDate } : null,
+		});
+	} catch (e) {
+		console.warn(`[RFQ-RECOMMENDATION] market benchmark for ${rfq.materialId} unavailable: ${errMsg(e)}`);
+		return { mapped: !!MATERIAL_BENCHMARK_MAP.bySubgroup[rfq.materialSubgroup], available: false, status: 'error', summary: `Market benchmarks couldn't be read: ${errMsg(e)}` };
+	}
+}
+
 async function marketStudy(run: Run, rfqId: string, online: { refresh?: boolean; cachedOnly?: boolean }) {
 	const { rfq, vendors, requirements } = await loadRfqFacts(run, rfqId);
 	const [should, historical, commodity, contract, onlinePrice] = await Promise.all([
@@ -965,6 +998,7 @@ async function marketStudy(run: Run, rfqId: string, online: { refresh?: boolean;
 		sustainability: sustainability(vendors), contract,
 		costSplit: costSplit(rfq),
 		index: await indexComparison(run, rfq, historical),
+		benchmark: await marketBenchmark(run, rfq, vendors, historical),
 	};
 	return { rfq, vendors, requirements, market };
 }
@@ -1336,37 +1370,60 @@ function strategyFor(v: RankedVendor, ranking: RankedVendor[], market: any, deli
 		}
 	}
 
-	// 3. Commodity indices: only the commodity's share of the cost moves with its index.
-	const idx = market.index;
-	const c = market.commodity;
-	if (idx?.available && idx.expectedEffectPct != null && idx.baseline) {
-		const e = Number(idx.expectedEffectPct);
-		const q = pct(quote, idx.baseline.price)!;
-		const gap = round(q - e, 1);
-		const moves = (idx.indices ?? [])
-			.filter((i: any) => i.changePct != null)
-			.map((i: any) => `${i.commodity} ${signed(i.changePct)} × ${i.sharePct}% share = ${signed(i.effectPct)}`)
-			.join('; ');
-		const data = `${moves}, ${idx.baseline.date} to ${idx.rfqDate} (commodity_prices, material master shares); quote ${signed(q)} vs our last purchase at ${inr(idx.baseline.price)}.`;
-		if (gap > 1) {
-			add('Market trend', `The quote is ${signed(q)} on our last purchase, while commodity indices account for ${signed(e)} on the product's cost.`, data,
-				`Ask them to justify the other ${gap} points or move toward the index-explained ${inr(idx.indexExplainedPrice)}.`);
-		} else if (e <= -1) {
-			add('Market trend', `Commodity indices fell, lowering this product's cost by about ${Math.abs(e)}%.`, data,
-				'Request an updated quotation that reflects the lower input costs.');
-		}
-	} else if (c?.available && c.change90dPct != null && c.exposurePct) {
-		const effect = round((c.change90dPct * c.exposurePct) / 100, 1);
-		const data = `${c.commodity} ${inr(c.latestPrice)} ${c.unit ?? ''} on ${c.latestDate}, ${signed(c.change90dPct)} over 90 days (commodity_prices); ${c.exposurePct}% of this item's cost (material master).`;
-		if (effect <= -1) {
-			add('Market trend', `${c.commodity} fell ${Math.abs(c.change90dPct)}% in 90 days; at its ${c.exposurePct}% share that's about ${Math.abs(effect)}% off this item's cost.`, data,
-				`Request an updated quotation reflecting the lower ${c.commodity} price.`);
-		} else if (effect >= 1) {
-			add('Market trend', `${c.commodity} rose ${c.change90dPct}% in 90 days; at its ${c.exposurePct}% share that's about ${effect}% on this item's cost, not ${c.change90dPct}%.`, data,
-				`If they cite it, accept no more than about ${effect}% on that account.`);
+	// 3. Commodity movement: only the commodity's share of the cost moves with its index.
+	const bm = market.benchmark;
+	if (bm?.mapped) {
+		// Coal and coke: verified market benchmark only, between this supplier's last order and this RFQ.
+		const s = bm.available ? bm.index?.perSupplier?.find((x: any) => x.vendorId === v.vendorId) : null;
+		if (!bm.available) {
+			missing.push(`a verified ${bm.commodityLabel ?? 'commodity'} market benchmark (provider access required)`);
+		} else if (s?.measurable && s.commodityImpactPct != null && s.unexplainedPts != null) {
+			const b = bm.benchmark;
+			const cur = bm.latest?.currency ?? '';
+			const data = `${b.name}: ${s.fromObservation} ${cur} ${s.fromPrice} → ${s.toObservation} ${cur} ${s.toPrice} (${signed(s.benchmarkChangePct)}); `
+				+ `${bm.commoditySharePct}% commodity share × ${signed(s.benchmarkChangePct)} = ${signed(s.commodityImpactPct)} (share from material master); `
+				+ `their last price ${inr(s.lastPrice)} on ${s.lastDate} → quote ${inr(quote)} (${signed(s.quoteChangePct)}). `
+				+ `Source: ${b.datasetVersion ?? b.provider}, ${b.sourceUrl}. ${bm.comparability?.label ?? ''}`;
+			if (s.unexplainedPts > 1) {
+				add('Market trend', `Benchmark ${s.benchmarkChangePct < 0 ? 'fell' : 'rose'} ${Math.abs(s.benchmarkChangePct)}% between their last order and this RFQ, a ${signed(s.commodityImpactPct)} commodity-driven impact, while their quote moved ${signed(s.quoteChangePct)}.`, data,
+					`Review their cost adjustments and request a revised commercial quotation; ask them to justify the other ${s.unexplainedPts} points.`);
+			} else if (s.commodityImpactPct <= -1) {
+				add('Market trend', `Benchmark fell ${Math.abs(s.benchmarkChangePct)}% since their last order, about ${Math.abs(s.commodityImpactPct)}% off this material's commodity cost.`, data,
+					'Request an updated quotation that reflects the lower input cost.');
+			}
 		}
 	} else {
-		missing.push('commodity index prices for this material');
+		const idx = market.index;
+		const c = market.commodity;
+		if (idx?.available && idx.expectedEffectPct != null && idx.baseline) {
+			const e = Number(idx.expectedEffectPct);
+			const q = pct(quote, idx.baseline.price)!;
+			const gap = round(q - e, 1);
+			const moves = (idx.indices ?? [])
+				.filter((i: any) => i.changePct != null)
+				.map((i: any) => `${i.commodity} ${signed(i.changePct)} × ${i.sharePct}% share = ${signed(i.effectPct)}`)
+				.join('; ');
+			const data = `${moves}, ${idx.baseline.date} to ${idx.rfqDate} (${SYNTHETIC_SOURCE}; material master shares); quote ${signed(q)} vs our last purchase at ${inr(idx.baseline.price)}.`;
+			if (gap > 1) {
+				add('Market trend', `The quote is ${signed(q)} on our last purchase, while commodity indices account for ${signed(e)} on the product's cost.`, data,
+					`Ask them to justify the other ${gap} points or move toward the index-explained ${inr(idx.indexExplainedPrice)}.`);
+			} else if (e <= -1) {
+				add('Market trend', `Commodity indices fell, lowering this product's cost by about ${Math.abs(e)}%.`, data,
+					'Request an updated quotation that reflects the lower input costs.');
+			}
+		} else if (c?.available && c.change90dPct != null && c.exposurePct) {
+			const effect = round((c.change90dPct * c.exposurePct) / 100, 1);
+			const data = `${c.commodity} ${inr(c.latestPrice)} ${c.unit ?? ''} on ${c.latestDate}, ${signed(c.change90dPct)} over 90 days (${SYNTHETIC_SOURCE}); ${c.exposurePct}% of this item's cost (material master).`;
+			if (effect <= -1) {
+				add('Market trend', `${c.commodity} fell ${Math.abs(c.change90dPct)}% in 90 days; at its ${c.exposurePct}% share that's about ${Math.abs(effect)}% off this item's cost.`, data,
+					`Request an updated quotation reflecting the lower ${c.commodity} price.`);
+			} else if (effect >= 1) {
+				add('Market trend', `${c.commodity} rose ${c.change90dPct}% in 90 days; at its ${c.exposurePct}% share that's about ${effect}% on this item's cost, not ${c.change90dPct}%.`, data,
+					`If they cite it, accept no more than about ${effect}% on that account.`);
+			}
+		} else {
+			missing.push('commodity index prices for this material');
+		}
 	}
 
 	// 4. Their past price to us for this material, else what we last paid anyone.
@@ -1486,6 +1543,7 @@ const marketSummary = (market: any) => ({
 	shouldCost: market.shouldCost?.summary,
 	historical: market.historical?.summary,
 	commodity: market.commodity?.summary,
+	marketBenchmark: market.benchmark?.summary,
 	onlinePrice: market.online?.note ? `${market.online.summary} ${market.online.note}` : market.online?.summary,
 	sustainability: market.sustainability?.summary,
 	contract: market.contract?.summary,
@@ -1784,6 +1842,63 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 					{ name: 'pointers', type: 'string', description: 'Negotiation points from our data, each with its action and [supporting data]' },
 					{ name: 'missingData', type: 'string', description: 'Evidence that was missing for this supplier' },
 				],
+			},
+		},
+		{
+			id: 'refresh-market-benchmarks',
+			name: 'Refresh Market Benchmarks',
+			toolType: 'direct',
+			cache: false,
+			description:
+				'Fetches verified external commodity benchmarks into market_benchmark_observations: World Bank Pink Sheet monthly ' +
+				'thermal coal (Australia, South Africa), and Trading Economics coking coal when TRADING_ECONOMICS_API_KEY is set. ' +
+				'Normalises to INR per tonne with dated ECB rates. Skips a provider whose data is already current unless force is true. ' +
+				'Never touches the synthetic commodity_prices series. ' +
+				'USE FOR: "refresh coal prices", "update market benchmarks". DO NOT USE FOR: reading prices for an RFQ (use the market study).',
+			params: {
+				force: 'boolean - optional; re-download even when the latest release was already imported',
+			},
+			fn: async (input: { force?: boolean }) => {
+				try {
+					const started = Date.now();
+					const result = await refreshBenchmarks(run, { force: input?.force === true });
+					console.log(`[MARKET-BENCHMARKS] refresh in ${Date.now() - started} ms: ${result.providers.map((p: any) => `${p.provider}=${p.status}`).join(', ') || result.message}`);
+					return { ...result, data: result.providers, count: result.providers.length };
+				} catch (e) {
+					return { error: errMsg(e) };
+				}
+			},
+			outputSchema: {
+				description: 'One row per provider: what the refresh did.',
+				fields: [
+					{ name: 'provider', type: 'string', description: 'world_bank, trading_economics or bigmint_import' },
+					{ name: 'status', type: 'string', description: 'ok, not_modified, access_required, unavailable or error' },
+					{ name: 'message', type: 'string', description: 'What happened' },
+					{ name: 'rows', type: 'number', description: 'Observations added or revised' },
+				],
+			},
+		},
+		{
+			id: 'import-market-benchmarks',
+			name: 'Import Market Benchmarks',
+			toolType: 'direct',
+			cache: false,
+			description:
+				'Imports authorized commodity assessments (e.g. a BigMint subscription export for metallurgical coke or anthracite) from CSV ' +
+				'with columns commodity, benchmark_name, specification, location, delivery_basis, observation_date, frequency, price, currency, ' +
+				'unit, source_url. Every row is validated; nothing is stored unless all rows pass. Only for data you are licensed to use.',
+			params: {
+				csv: 'string - the CSV text, header row first',
+			},
+			fn: async (input: { csv?: string }) => {
+				if (!input?.csv || typeof input.csv !== 'string') return { error: 'csv is required.' };
+				try {
+					const principal = getRequestContext()?.principal;
+					const result = await importBenchmarks(run, input.csv, principal?.kind === 'user' ? principal.userId : null);
+					return { ...result, data: [result], count: result.rows };
+				} catch (e) {
+					return { error: errMsg(e) };
+				}
 			},
 		},
 	];

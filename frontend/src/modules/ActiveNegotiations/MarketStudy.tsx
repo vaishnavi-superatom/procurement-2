@@ -7,6 +7,7 @@ import type {
   CostSplit,
   HistoricalPrice,
   IndexComparison,
+  MarketBenchmark,
   MarketInputs,
   MarketListing,
   MarketSearch,
@@ -344,7 +345,7 @@ function shouldCostModel(entered: ShouldCost | null, split: CostSplit | null | u
         estimate: false,
       };
     });
-    return { total, unit: entered.unit ?? null, totalBasis: `Entered should cost${entered.source ? ` (${entered.source})` : ''}`, rows, estimated: false };
+    return { ...PRODUCT_MODEL_TEXT, total, unit: entered.unit ?? null, totalBasis: `Entered should cost${entered.source ? ` (${entered.source})` : ''}`, rows, estimated: false };
   }
 
   // 2. The market price, split by this material's commodity shares.
@@ -370,7 +371,72 @@ function shouldCostModel(entered: ShouldCost | null, split: CostSplit | null | u
       estimate: !!share,
     };
   });
-  return { total, unit: benchmark?.unit ?? null, totalBasis: benchmark ? `Market price: ${benchmark.source}` : null, rows, estimated: true };
+  return { ...PRODUCT_MODEL_TEXT, total, unit: benchmark?.unit ?? null, totalBasis: benchmark ? `Market price: ${benchmark.source}` : null, rows, estimated: true };
+}
+
+const PRODUCT_MODEL_TEXT = {
+  title: 'Should cost',
+  valueLabel: 'Should cost, every supplier',
+  formula: 'Should cost = Raw Material/BOM + Machining/Conversion + IP/Licensing + Overhead + Logistics + Packaging + Supplier margin',
+  compareWord: 'the should cost',
+  note: null as string | null,
+  emptyText: "No should cost has been entered for this material and no market price has been found yet, so there's no total to split.",
+};
+
+/**
+ * Coal and coke: a commodity model on the verified market benchmark. Every other component counts
+ * only from entered, verified figures (material_should_costs). No supplier margin is added: market
+ * prices already carry it. With only the benchmark known, the figure is a Market Reference Price.
+ */
+const COMMODITY_COMPONENTS: { key: string; label: string; match: RegExp; what: string; required: boolean }[] = [
+  { key: 'quality', label: 'Verified quality adjustments', match: /quality|grade|premium|discount/i, what: 'Premium or discount for the grade the PR asks for', required: true },
+  { key: 'freight', label: 'Verified freight', match: /freight|transport|shipping/i, what: 'Sea and inland freight to our plant', required: true },
+  { key: 'handling', label: 'Verified handling', match: /handling|port|loading|unloading/i, what: 'Port and plant handling', required: true },
+  { key: 'charges', label: 'Applicable non-recoverable charges', match: /duty|cess|levy|insurance|charge/i, what: 'Import duty, cess, insurance and other charges we cannot recover', required: true },
+  { key: 'other', label: 'Other justified costs', match: /other/i, what: 'Anything else, with its justification', required: false },
+];
+
+function commodityShouldCostModel(b: MarketBenchmark, entered: ShouldCost | null, materialUnit: string | undefined) {
+  const obs = b.atRfq ?? b.latest ?? null;
+  const unitOk = !materialUnit || /^(mt|t|tonnes?|metric ?tonn?e?s?)$/i.test(materialUnit.trim());
+  const benchAmount = b.available && obs && unitOk ? obs.priceInrPerMt ?? null : null;
+  const lines = entered?.available ? entered.breakdown ?? [] : [];
+  const rows: ShouldCostRow[] = [
+    {
+      key: 'benchmark',
+      label: 'Comparable commodity benchmark',
+      what: b.comparability?.label ?? 'Commodity market price',
+      amount: benchAmount,
+      pct: null,
+      basis: b.available && b.benchmark && obs
+        ? `${b.benchmark.name}, ${obs.periodLabel ?? obs.observationDate}: ${b.latest?.currency} ${obs.price}/${b.latest?.unit}`
+          + (obs.priceInrPerMt != null ? ` × ${obs.fxBasis ?? 'dated FX'}` : ' (no dated FX rate, not converted)')
+        : b.summary,
+      estimate: false,
+    },
+    ...COMMODITY_COMPONENTS.map((c) => {
+      const line = lines.find((l) => c.match.test(l.label));
+      return { key: c.key, label: c.label, what: c.what, amount: line ? line.amount : null, pct: null, basis: line ? `Entered: ${line.label}${entered?.source ? ` (${entered.source})` : ''}` : 'No verified figure on record', estimate: false };
+    }),
+  ];
+  const known = rows.filter((r) => r.amount != null);
+  const total = benchAmount != null ? known.reduce((sum, r) => sum + (r.amount as number), 0) : null;
+  for (const r of rows) r.pct = r.amount != null && total ? (r.amount / total) * 100 : null;
+  const complete = benchAmount != null && COMMODITY_COMPONENTS.filter((c) => c.required).every((c) => rows.find((r) => r.key === c.key)?.amount != null)
+    && b.comparability?.status === 'direct';
+  return {
+    total,
+    unit: 'MT',
+    rows,
+    estimated: false,
+    totalBasis: b.available && b.benchmark ? `${b.benchmark.datasetVersion ?? b.benchmark.provider} · ${b.benchmark.sourceUrl}` : null,
+    title: complete ? 'Should cost' : 'Market Reference Price',
+    valueLabel: complete ? 'Should cost, every supplier' : 'Market Reference Price (not a complete should cost)',
+    formula: 'Should cost = Comparable commodity benchmark + Verified quality adjustments + Verified freight + Verified handling + Applicable non-recoverable charges + Other justified costs',
+    compareWord: complete ? 'the should cost' : 'the market reference price',
+    note: complete ? null : 'Only the commodity benchmark is verified. Quality adjustments, freight, handling and charges have no verified figures, so this is a market reference, not what the product should cost delivered to us. No supplier margin is added: market prices already include it.',
+    emptyText: b.available ? 'The benchmark could not be converted to INR per tonne for this material.' : 'Market benchmark unavailable — provider access required.',
+  };
 }
 
 const signedPct = (v: number | null | undefined, digits = 1) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(digits)}%`);
@@ -388,9 +454,11 @@ const ShouldCostCard: React.FC<{
   quotes: QuoteRef[];
   unit?: string;
   productName?: string;
-}> = ({ entered, split, online, marketSearch, loading, quotes, unit, productName }) => {
+  /** Coal and coke: the verified commodity benchmark drives the model. */
+  marketBenchmark?: MarketBenchmark;
+}> = ({ entered, split, online, marketSearch, loading, quotes, unit, productName, marketBenchmark }) => {
   const benchmark = benchmarkOf(online, marketSearch);
-  const model = shouldCostModel(entered, split, benchmark);
+  const model = marketBenchmark?.mapped ? commodityShouldCostModel(marketBenchmark, entered, unit) : shouldCostModel(entered, split, benchmark);
   const { total, rows } = model;
   const knownPct = rows.reduce((s, r) => s + (r.pct ?? 0), 0);
   // The part of the cost our data doesn't split into components.
@@ -408,7 +476,7 @@ const ShouldCostCard: React.FC<{
   ].join(' + ');
 
   return (
-    <Card title={productName ? `Should cost · ${productName}` : 'Should cost'} className="lg:col-span-2">
+    <Card title={productName ? `${model.title} · ${productName}` : model.title} className="lg:col-span-2">
       {loading && total == null ? (
         <>
           <Skeleton lines={2} />
@@ -421,7 +489,7 @@ const ShouldCostCard: React.FC<{
           {/* The final value, up front: one for the product, not one per supplier */}
           <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
             <div className="rounded-md px-3 py-2" style={{ backgroundColor: TEAL.tint, border: `1px solid ${TEAL.border}` }}>
-              <div className="text-[11px]" style={{ color: COLORS.text.secondary }}>Should cost, every supplier</div>
+              <div className="text-[11px]" style={{ color: COLORS.text.secondary }}>{model.valueLabel}</div>
               <p className="text-xl font-bold leading-tight whitespace-nowrap" style={{ color: total != null ? COLORS.text.primary : COLORS.text.tertiary }}>
                 {total != null ? formatINR(total) : UNAVAILABLE}
                 {total != null && shownUnit && <span className="text-xs font-normal" style={{ color: COLORS.text.tertiary }}> / {shownUnit}</span>}
@@ -434,7 +502,7 @@ const ShouldCostCard: React.FC<{
             )}
             {total != null && lowest != null && !unitMismatch && (
               <span className="text-[11px] mb-1.5" style={{ color: COLORS.text.secondary }}>
-                Lowest quote {formatINR(lowest)} is {vsText(lowest, total)} the should cost
+                Lowest quote {formatINR(lowest)} is {vsText(lowest, total)} {model.compareWord}
               </span>
             )}
           </div>
@@ -442,9 +510,10 @@ const ShouldCostCard: React.FC<{
             <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>Total from: {model.totalBasis}</p>
           )}
           {total == null && (
-            <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
-              No should cost has been entered for this material and no market price has been found yet, so there's no total to split.
-            </p>
+            <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>{model.emptyText}</p>
+          )}
+          {model.note && total != null && (
+            <p className="text-[11px]" style={{ color: '#B45309' }}>{model.note}</p>
           )}
           {unitMismatch && (
             <p className="text-[11px]" style={{ color: '#B45309' }}>
@@ -456,7 +525,7 @@ const ShouldCostCard: React.FC<{
           <div className="rounded-md px-3 py-2 mt-1 text-[11px] space-y-0.5" style={{ backgroundColor: COLORS.lightBackground, border: `1px solid ${COLORS.lightGray}` }}>
             <p style={{ color: COLORS.text.secondary }}>
               <span className="font-semibold" style={{ color: COLORS.text.primary }}>Formula: </span>
-              Should cost = Raw Material/BOM + Machining/Conversion + IP/Licensing + Overhead + Logistics + Packaging + Supplier margin
+              {model.formula}
             </p>
             <p className="tabular-nums" style={{ color: COLORS.text.secondary }}>
               = {formulaNumbers} = <b style={{ color: COLORS.text.primary }}>{total != null ? formatINR(total) : UNAVAILABLE}</b>
@@ -474,7 +543,7 @@ const ShouldCostCard: React.FC<{
               <thead>
                 <tr style={{ color: COLORS.text.tertiary }}>
                   {['Component', 'Basis', 'Share', 'Amount'].map((h) => (
-                    <th key={h} className={`${h === 'Share' || h === 'Amount' ? 'text-right' : 'text-left'} font-medium py-1 pr-3 whitespace-nowrap`}>{h}</th>
+                    <th key={h} className={`${h === 'Share' || h === 'Amount' ? 'text-right' : 'text-left'} font-medium py-1 pr-3 align-bottom`}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -508,7 +577,7 @@ const ShouldCostCard: React.FC<{
                   </tr>
                 )}
                 <tr style={{ borderTop: `1px solid ${TEAL.border}` }}>
-                  <td className="py-1.5 pr-3 font-semibold" style={{ color: COLORS.text.primary }} colSpan={2}>Should cost</td>
+                  <td className="py-1.5 pr-3 font-semibold" style={{ color: COLORS.text.primary }} colSpan={2}>{model.title}</td>
                   <td className="py-1.5 pr-3 text-right tabular-nums" style={{ color: COLORS.text.secondary }}>{total != null ? '100%' : '—'}</td>
                   <td className="py-1.5 pr-3 text-right font-bold whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>
                     {total != null ? formatINR(total) : UNAVAILABLE}
@@ -522,7 +591,7 @@ const ShouldCostCard: React.FC<{
             <>
               <p className="flex items-center gap-1.5 text-[11px] mt-1" style={{ color: COLORS.text.secondary }}>
                 <span aria-hidden className="inline-block flex-none" style={{ width: 2, height: 12, backgroundColor: COLORS.text.primary }} />
-                Should cost line
+                {model.title} line
               </p>
               <QuotesVsShouldCost quotes={ranked} shouldCost={total} />
             </>
@@ -572,7 +641,7 @@ const IndexComparisonCard: React.FC<{ data: IndexComparison | null | undefined; 
               <thead>
                 <tr style={{ color: COLORS.text.tertiary }}>
                   {['Index', 'Share of cost', 'Index change', 'Effect on cost'].map((h) => (
-                    <th key={h} className={`${h === 'Index' ? 'text-left' : 'text-right'} font-medium py-1 pr-3 whitespace-nowrap`}>{h}</th>
+                    <th key={h} className={`${h === 'Index' ? 'text-left' : 'text-right'} font-medium py-1 pr-3 align-bottom`}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -610,7 +679,7 @@ const IndexComparisonCard: React.FC<{ data: IndexComparison | null | undefined; 
                 <thead>
                   <tr style={{ color: COLORS.text.tertiary }}>
                     {['Supplier', 'Quote', 'vs last purchase', 'Beyond the index'].map((h) => (
-                      <th key={h} className={`${h === 'Supplier' ? 'text-left' : 'text-right'} font-medium py-1 pr-3 whitespace-nowrap`}>{h}</th>
+                      <th key={h} className={`${h === 'Supplier' ? 'text-left' : 'text-right'} font-medium py-1 pr-3 align-bottom`}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -767,7 +836,7 @@ const PastSuppliers: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
           <thead>
             <tr style={{ color: COLORS.text.tertiary }}>
               {['Supplier', 'Orders', 'Last price', 'Last ordered'].map((h) => (
-                <th key={h} className="text-left font-medium py-1 pr-3 whitespace-nowrap">{h}</th>
+                <th key={h} className="text-left font-medium py-1 pr-3 align-bottom">{h}</th>
               ))}
             </tr>
           </thead>
@@ -889,6 +958,145 @@ const MarketPriceCard: React.FC<{ market: MarketSearch | null; loading: boolean 
 };
 
 
+/**
+ * Commodity Market Intelligence: the verified external benchmark for a coal or coke material
+ * (World Bank Pink Sheet today), with its source and date, its history, and each quote against it.
+ * Never the synthetic commodity_prices series.
+ */
+const FRESHNESS_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
+  current: { bg: '#DCFCE7', fg: '#16A34A', label: 'Current' },
+  aging: { bg: '#FEF3C7', fg: '#B45309', label: 'Aging' },
+  stale: { bg: COLORS.lightGray, fg: COLORS.text.secondary, label: 'Stale' },
+};
+
+const CommodityMarketCard: React.FC<{ data: MarketBenchmark | undefined; loading: boolean }> = ({ data, loading }) => {
+  const b = data?.benchmark;
+  const l = data?.latest;
+  const history = data?.history ?? [];
+  const option = history.length > 1 && l ? {
+    animation: false,
+    grid: { left: 4, right: 12, top: 8, bottom: 0, containLabel: true },
+    xAxis: { type: 'category', data: history.map((h) => h.date.slice(0, 7)), axisLabel: { color: MUTED, fontSize: 10, hideOverlap: true }, axisLine: { lineStyle: { color: AXIS } }, axisTick: { show: false } },
+    yAxis: { type: 'value', scale: true, name: `${l.currency}/${l.unit}`, nameTextStyle: { color: MUTED, fontSize: 10, align: 'left' }, axisLabel: { color: MUTED, fontSize: 10 }, splitLine: { lineStyle: { color: GRID } } },
+    tooltip: {
+      ...TOOLTIP,
+      trigger: 'axis',
+      formatter: (ps: { dataIndex: number }[]) => {
+        const h = history[ps[0].dataIndex];
+        return `<b>${l.currency} ${h.price}/${l.unit}</b>${h.priceInrPerMt != null ? ` ≈ ${formatINR(h.priceInrPerMt)}/MT` : ''}<br/><span style="color:${COLORS.text.secondary}">${h.date.slice(0, 7)} (${b?.frequency} average)</span>`;
+      },
+    },
+    series: [{ type: 'line', data: history.map((h) => h.price), showSymbol: false, lineStyle: { width: 2, color: SERIES }, itemStyle: { color: SERIES } }],
+  } : null;
+  const fresh = l ? FRESHNESS_STYLE[l.freshness.status] : null;
+  return (
+    <Card title={`Commodity Market Intelligence${data?.commodityLabel ? ` · ${data.commodityLabel}` : ''}`} className="lg:col-span-2">
+      {loading && !data?.available ? (
+        <>
+          <Skeleton lines={2} />
+          <p className="text-[11px] flex items-center gap-1" style={{ color: COLORS.text.tertiary }}>
+            <Icon icon="mdi:earth" className="w-3.5 h-3.5" /> Fetching verified market benchmarks…
+          </p>
+        </>
+      ) : !data ? (
+        <Unavailable text="Not in this saved analysis. Re-run the Market Analysis to see it." />
+      ) : !data.available || !b || !l ? (
+        <>
+          <Unavailable text={data.summary} />
+          {(data.providers ?? []).map((p) => (
+            <p key={p.provider} className="text-[11px]" style={{ color: COLORS.text.tertiary }}>{p.provider.replace('_', ' ')}: {p.message ?? p.status}</p>
+          ))}
+          <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>The generated demo series in commodity_prices is synthetic and isn't used here.</p>
+        </>
+      ) : (
+        <>
+          {/* A. Current reference price, with source and date */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-xs font-semibold" style={{ color: COLORS.text.primary }}>{b.name}</span>
+            <span className="px-1.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: '#DCFCE7', color: '#16A34A' }}>
+              {b.dataStatus === 'verified_external' ? 'Verified external data' : 'Authorized import'}
+            </span>
+            {data.comparability && (
+              <span className="px-1.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: data.comparability.status === 'direct' ? TEAL.tint : '#FEF3C7', color: data.comparability.status === 'direct' ? TEAL.dark : '#B45309' }}>
+                {data.comparability.label}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Figure strong label={`Latest · ${l.periodLabel ?? l.observationDate}`} value={`${l.currency} ${l.price}`} unit={l.unit} />
+            {l.priceInrPerMt != null && <Figure label="In rupees" value={formatINR(l.priceInrPerMt)} unit="MT" sub={l.fxBasis ?? undefined} />}
+            {(data.movements ?? []).map((m) => (
+              <Figure key={m.label} label={`${m.label} change`} value={signedPct(m.changePct)} sub={m.from ? `${m.from.slice(0, 7)} → ${m.to.slice(0, 7)}` : 'not enough history'} />
+            ))}
+            {fresh && (
+              <Figure label="Freshness" value={fresh.label} sub={`${l.freshness.daysOld} days after the period`} />
+            )}
+          </div>
+          <p className="text-[11px] leading-snug" style={{ color: COLORS.text.secondary }}>
+            {b.specification}{b.deliveryBasis ? ` · ${b.deliveryBasis}` : ''}
+          </p>
+          <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+            Source: {b.datasetVersion ?? b.provider} ·{' '}
+            <a href={b.sourceUrl} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: TEAL.base }}>{hostOf(b.sourceUrl)}</a>
+            {' '}· {b.frequency} observations (monthly averages are not daily prices)
+          </p>
+
+          {/* B. History */}
+          {option && (
+            <div role="img" aria-label={`${b.name}, ${b.frequency} history`}>
+              <ReactECharts option={option} notMerge opts={{ renderer: 'svg' }} style={{ height: 170, width: '100%' }} />
+            </div>
+          )}
+
+          {/* C. Each quote against the benchmark for the RFQ's month */}
+          {(data.suppliers ?? []).length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr style={{ color: COLORS.text.tertiary }}>
+                    {['Supplier', 'Quote', `Benchmark${data.atRfq ? ` (${data.atRfq.observationDate.slice(0, 7)})` : ''}`, 'Difference', 'Status'].map((h, i) => (
+                      <th key={h} className={`${i === 0 || i === 4 ? 'text-left' : 'text-right'} font-medium py-1 pr-3 align-bottom`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.suppliers!.map((sp) => (
+                    <tr key={sp.vendorId} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                      <td className="py-1 pr-3" style={{ color: COLORS.text.primary }}>
+                        <span className="inline-flex items-center gap-1">{sp.vendorName} <TRankBadge rank={sp.tRank} /></span>
+                      </td>
+                      <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap" style={{ color: COLORS.text.primary }}>{formatINR(sp.quotedPrice)}</td>
+                      <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{sp.benchmarkInr != null ? formatINR(sp.benchmarkInr) : '—'}</td>
+                      <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap" style={{ color: COLORS.text.primary }}>
+                        {sp.differenceInr != null ? `${sp.differenceInr >= 0 ? '+' : '−'}${formatINR(Math.abs(sp.differenceInr))} (${signedPct(sp.differencePct)})` : '—'}
+                      </td>
+                      <td className="py-1 pr-3" style={{ color: sp.comparability === 'direct' ? COLORS.text.secondary : '#B45309' }}>
+                        {sp.comparability === 'direct' ? 'Comparable' : 'Reference only'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* D. Insights and limitations, from the data only */}
+          {(data.insights ?? []).length > 0 && (
+            <ul className="text-[11px] space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.primary }}>
+              {data.insights!.map((t) => <li key={t}>{t}</li>)}
+            </ul>
+          )}
+          {(data.limitations ?? []).length > 0 && (
+            <ul className="text-[10px] space-y-0.5 list-disc pl-4" style={{ color: COLORS.text.tertiary }}>
+              {data.limitations!.map((t) => <li key={t}>{t}</li>)}
+            </ul>
+          )}
+        </>
+      )}
+    </Card>
+  );
+};
+
 /** ④ EcoVadis score (0–100) of each vendor still in the running, best first. */
 const SustainabilityCard: React.FC<{ data: Sustainability | null; vendorIds: string[] }> = ({ data, vendorIds }) => {
   const rows = (data?.vendors ?? [])
@@ -954,12 +1162,14 @@ export const MarketStudyPanel: React.FC<{
   /** Prices and suppliers per market (the Market price card). */
   marketSearch: MarketSearch | null;
   marketSearchLoading: boolean;
+  /** Verified commodity benchmarks being fetched. */
+  benchmarkLoading?: boolean;
   error: string | null;
   /** Quotes still in the running (Not accepted left out). */
   quotes: QuoteRef[];
   /** The product the should cost is for (one per product, not per supplier). */
   productName?: string;
-}> = ({ market, online, onlineLoading, marketSearch, marketSearchLoading, error, quotes, productName }) => {
+}> = ({ market, online, onlineLoading, marketSearch, marketSearchLoading, benchmarkLoading = false, error, quotes, productName }) => {
   // Open once shown: the cards are what the buyer reads (meeting, 18 Oct).
   const [expanded, setExpanded] = useState(true);
   const vendorIds = quotes.map((q) => q.vendorId);
@@ -993,12 +1203,15 @@ export const MarketStudyPanel: React.FC<{
           <div className="grid gap-3 p-4 grid-cols-1 lg:grid-cols-2">
             <PriceHistoryCard data={market?.historical ?? null} quotes={quotes} />
             <MarketPriceCard market={marketSearch} loading={marketSearchLoading} />
+            {/* Coal and coke only: the verified external benchmark. */}
+            {market?.benchmark?.mapped && <CommodityMarketCard data={market.benchmark} loading={!market || benchmarkLoading} />}
             <SustainabilityCard data={market?.sustainability ?? null} vendorIds={vendorIds} />
             <IndexComparisonCard data={market?.index} loading={!market} quotes={quotes} unit={market?.historical?.unit} />
             {/* Last, full width: it draws on the market price above. */}
             <ShouldCostCard
               entered={market?.shouldCost ?? null}
               split={market?.costSplit}
+              marketBenchmark={market?.benchmark}
               productName={productName}
               online={online ?? market?.online ?? null}
               marketSearch={marketSearch}

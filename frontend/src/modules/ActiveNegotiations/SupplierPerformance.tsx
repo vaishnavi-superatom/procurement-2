@@ -189,7 +189,7 @@ export const SupplierPerformance: React.FC<{ suppliers: PerformanceSupplier[]; r
             <thead>
               <tr style={{ backgroundColor: COLORS.lightBackground }}>
                 {['Vendor', 'Delivery Discipline', 'Sustainability Score'].map((h) => (
-                  <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: COLORS.text.secondary }}>
+                  <th key={h} className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                     {h}
                   </th>
                 ))}
@@ -206,13 +206,13 @@ export const SupplierPerformance: React.FC<{ suppliers: PerformanceSupplier[]; r
                 const tier = sc?.sustainability_tier ? TIER_STYLE[sc.sustainability_tier] : undefined;
                 return (
                   <tr key={s.vendorId} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
-                    <td className="px-4 py-2 align-top" style={{ color: COLORS.text.primary }}>
+                    <td className="px-3 py-2 align-top" style={{ color: COLORS.text.primary }}>
                       <span className="inline-flex items-center gap-1.5">
                         <span className="font-medium">{s.vendorName}</span>
                         <TRankBadge rank={s.tRank} />
                       </span>
                     </td>
-                    <td className="px-4 py-2 align-top">
+                    <td className="px-3 py-2 align-top">
                       {loading ? (
                         <Muted>Loading…</Muted>
                       ) : otd == null ? (
@@ -232,7 +232,7 @@ export const SupplierPerformance: React.FC<{ suppliers: PerformanceSupplier[]; r
                         </>
                       )}
                     </td>
-                    <td className="px-4 py-2 align-top">
+                    <td className="px-3 py-2 align-top">
                       {loading ? (
                         <Muted>Loading…</Muted>
                       ) : eco == null ? (

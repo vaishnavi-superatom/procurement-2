@@ -234,7 +234,8 @@ const VendorAvatar: React.FC<{ vendorId: string; name: string; photo: string | n
 // ============================================================
 
 const cardStyle = { border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card };
-const th = 'text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap';
+// Headers may wrap to two lines, so the profile's tables fit without sideways scrolling.
+const th = 'text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide align-bottom';
 const td = 'px-3 py-1.5';
 
 const Section: React.FC<{ title: string; subtitle?: string; children: React.ReactNode }> = ({ title, subtitle, children }) => (
