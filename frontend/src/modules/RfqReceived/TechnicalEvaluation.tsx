@@ -65,6 +65,7 @@ export const TRankBadge: React.FC<{ rank: string | null | undefined }> = ({ rank
     <span
       className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
       style={{ backgroundColor: style.bg, color: style.fg }}
+      title={`Technical Bid Ranking: ${style.label}`}
     >
       {style.label}
     </span>
@@ -258,7 +259,9 @@ export const TechnicalEvaluation: React.FC<{
         {/* The buyer's call, pre-filled with the suggestion */}
         <div className="rounded-lg p-3 space-y-3" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white }}>
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold" style={{ color: COLORS.text.primary }}>T-Rank</span>
+            <span className="text-xs font-semibold" style={{ color: COLORS.text.primary }} title="Technical Bid Ranking (T1, T2, T3…)">
+              T-Rank <span className="font-normal" style={{ color: COLORS.text.tertiary }}>· Technical bid ranking</span>
+            </span>
             <TRankBadge rank={current} />
           </div>
           <select

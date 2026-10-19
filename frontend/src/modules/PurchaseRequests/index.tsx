@@ -553,10 +553,12 @@ const PRListScreen: React.FC<{
   // are currently materialized by "Load more".
   const groupTotals = useMemo(() => new Map(groups.map(([name, groupRows]) => [name, groupRows.length])), [groups]);
 
-  const columnCount = showRfqColumn ? 8 : 7;
-  // Compact padding/row-height for the standalone page only — the Home
-  // "Total PRs Raised" table (showRfqColumn=true) keeps its original sizing.
-  const cellPad = showRfqColumn ? 'px-4 py-3' : 'px-3 py-1.5';
+  // Department and plant ride under the material (a second line), so every
+  // column fits a desktop screen without sideways scrolling.
+  const columnCount = showRfqColumn ? 7 : 6;
+  // Compact padding/row-height for the standalone page; the Home
+  // "Total PRs Raised" table (showRfqColumn=true) keeps a little more air.
+  const cellPad = showRfqColumn ? 'px-3 py-2.5' : 'px-3 py-1.5';
   const pageTitle = showRfqColumn ? 'Purchase Requests' : 'Purchase Requisitions';
 
   if (loading) {
@@ -579,11 +581,12 @@ const PRListScreen: React.FC<{
 
   return (
     <div
-      className={showRfqColumn ? 'w-full flex flex-col' : 'flex flex-col mx-auto'}
+      className={showRfqColumn ? 'w-full flex flex-col mx-auto' : 'flex flex-col mx-auto'}
       style={{
         height: 'calc(100vh - 160px)',
         minHeight: 480,
-        ...(showRfqColumn ? {} : { width: '82%', minWidth: 760 }),
+        // Centred, and capped so very wide screens don't stretch rows thin.
+        ...(showRfqColumn ? { maxWidth: 1180 } : { width: '82%', minWidth: 760 }),
       }}
     >
       {/* Toolbar — fixed, never scrolls */}
@@ -640,34 +643,38 @@ const PRListScreen: React.FC<{
         style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white, boxShadow: SHADOWS.card }}
       >
         {/* Fixed column widths so content never triggers a table-wide
-            column-width recalculation (e.g. on row hover); minWidth so a narrow
-            container scrolls sideways instead of clipping the IDs. */}
-        <table
-          className="w-full text-sm border-collapse"
-          style={{ tableLayout: 'fixed', minWidth: showRfqColumn ? 1000 : 760 }}
-        >
+            column-width recalculation (e.g. on row hover). Material takes the
+            rest; minWidth only matters on very narrow windows. */}
+        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: 620 }}>
           <colgroup>
-            <col style={{ width: '128px' }} />
+            <col style={{ width: '104px' }} />
             <col />
-            <col style={{ width: showRfqColumn ? '128px' : '112px' }} />
-            <col style={{ width: '72px' }} />
-            <col style={{ width: '100px' }} />
-            {showRfqColumn && <col style={{ width: '150px' }} />}
-            <col style={{ width: showRfqColumn ? '120px' : '136px' }} />
-            <col style={{ width: '128px' }} />
+            <col style={{ width: '92px' }} />
+            {showRfqColumn && <col style={{ width: '120px' }} />}
+            <col style={{ width: showRfqColumn ? '108px' : '128px' }} />
+            <col style={{ width: '112px' }} />
+            <col style={{ width: '32px' }} />
           </colgroup>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: COLORS.lightBackground }}>
             <tr>
-              {(showRfqColumn
-                ? ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ ID', 'Required By', 'Value']
-                : ['PR ID', 'Material', 'Department', 'Plant', 'Urgency', 'RFQ Required By', 'Value']
-              ).map((h) => (
+              {[
+                ...(showRfqColumn
+                  ? ['PR ID', 'Material', 'Urgency', 'RFQ ID', 'Required By', 'Value']
+                  : ['PR ID', 'Material', 'Urgency', 'RFQ Required By', 'Value']),
+                '',
+              ].map((h, i) => (
                 <th
-                  key={h}
-                  className={`${h === 'Value' ? 'text-right' : 'text-left'} ${cellPad} text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap`}
+                  key={h || `col-${i}`}
+                  className={`${h === 'Value' ? 'text-right' : 'text-left'} ${h ? cellPad : ''} text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap`}
                   style={{ color: COLORS.text.secondary, borderBottom: `1px solid ${TEAL.border}` }}
                 >
-                  {h}
+                  {h === 'Material' ? (
+                    <>
+                      Material <span className="normal-case font-normal tracking-normal" style={{ color: COLORS.text.tertiary }}>· Dept · Plant</span>
+                    </>
+                  ) : (
+                    h
+                  )}
                 </th>
               ))}
             </tr>
@@ -715,15 +722,24 @@ const PRListScreen: React.FC<{
                           </span>
                         )}
                       </div>
+                      <div className="text-xs truncate mt-0.5" style={{ color: COLORS.text.tertiary }} title={`${row.requester_dept} · Plant ${row.plant_code}`}>
+                        {row.requester_dept} · Plant {row.plant_code}
+                      </div>
                     </td>
-                    <td className={`${cellPad} truncate`} style={{ color: COLORS.text.secondary }} title={row.requester_dept}>{row.requester_dept}</td>
-                    <td className={`${cellPad} whitespace-nowrap`} style={{ color: COLORS.text.secondary }}>{row.plant_code}</td>
                     <td className={`${cellPad} whitespace-nowrap`}><UrgencyBadge urgency={row.urgency} /></td>
                     {showRfqColumn && (
                       <td className={cellPad}><RfqCell hasRfq={Boolean(row.has_rfq)} rfqIds={row.rfq_ids} /></td>
                     )}
                     <td className={`${cellPad} whitespace-nowrap`} style={{ color: COLORS.text.secondary }}>{formatDate(row.required_date)}</td>
                     <td className={`${cellPad} font-medium text-right whitespace-nowrap tabular-nums`} style={{ color: COLORS.text.primary }}>{formatINR(row.total_value)}</td>
+                    {/* Row action: opens the PR (and from there, its RFQ). */}
+                    <td className="pr-2 text-right" aria-hidden>
+                      <Icon
+                        icon="mdi:chevron-right"
+                        className="w-4 h-4 inline-block"
+                        style={{ color: hoveredId === row.pr_id ? TEAL.base : COLORS.text.tertiary }}
+                      />
+                    </td>
                   </tr>
                 ))}
               </React.Fragment>
@@ -966,7 +982,7 @@ const PRDetailScreen: React.FC<{
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ backgroundColor: COLORS.lightBackground }}>
-                  {['ID', 'Status', 'Vendors Invited', 'Quotes Received'].map((h) => (
+                  {['ID', 'Status', 'Vendors Invited / Quotes Received'].map((h) => (
                     <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
                       {h}
                     </th>
@@ -988,8 +1004,11 @@ const PRDetailScreen: React.FC<{
                         {r.rfq_status}
                       </span>
                     </td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.vendors_invited}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{r.quotes_received}</td>
+                    <td className="px-4 py-2 font-bold tabular-nums whitespace-nowrap" style={{ color: COLORS.text.primary }}>
+                      {r.vendors_invited} Vendor{r.vendors_invited === 1 ? '' : 's'} Invited
+                      <span className="mx-1 font-normal" style={{ color: COLORS.text.tertiary }}>/</span>
+                      {r.quotes_received} Quote{r.quotes_received === 1 ? '' : 's'} Received
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -12,8 +12,8 @@
  *                      back to the step-3 top pick when it fails or misbehaves
  *   5. Save            snapshot to rfq_recommendations
  *
- * Also the negotiation strategy (meeting, 18 Oct): per supplier, five pointers from
- * the same data, the last one the discount to ask for.
+ * Also the negotiation strategy: per supplier, 3–5 points from the same data, each
+ * with its reason, data and action, then the discount to ask for; missing data is listed.
  *
  * Tables it writes (source writeMode must be at least 'dml'), created once in
  * the procurement DB:
@@ -87,6 +87,8 @@ interface RfqFacts {
 	standardPrice: number | null;
 	primaryCommodity: string | null;
 	commodityPct: number | null;
+	secondaryCommodity: string | null;
+	secondaryCommodityPct: number | null;
 	requestedQty: number | null;
 	plantCode: string | null;
 	urgency: string | null;
@@ -186,7 +188,7 @@ async function loadRfqFacts(run: Run, rfqId: string): Promise<{ rfq: RfqFacts; v
 	const [r] = await run(`
 		SELECT r.rfq_id, r.pr_id, r.rfq_date::text AS rfq_date, r.rfq_status, r.material_id,
 		       m.material_desc, m.material_group, m.material_subgroup, m.unit_of_measure, m.standard_price,
-		       m.primary_commodity, m.commodity_pct, pr.requested_qty, pr.plant_code, pr.urgency
+		       m.primary_commodity, m.commodity_pct, m.secondary_commodity, m.secondary_commodity_pct, pr.requested_qty, pr.plant_code, pr.urgency
 		FROM rfq_events r
 		JOIN material_master m ON m.material_id = r.material_id
 		LEFT JOIN purchase_requisitions pr ON pr.pr_id = r.pr_id AND pr.material_id = r.material_id
@@ -198,7 +200,8 @@ async function loadRfqFacts(run: Run, rfqId: string): Promise<{ rfq: RfqFacts; v
 		rfqId: r.rfq_id, prId: r.pr_id, rfqDate: r.rfq_date, rfqStatus: r.rfq_status, materialId: r.material_id,
 		materialDesc: r.material_desc, materialGroup: r.material_group, materialSubgroup: r.material_subgroup,
 		unit: r.unit_of_measure, standardPrice: num(r.standard_price), primaryCommodity: r.primary_commodity || null,
-		commodityPct: num(r.commodity_pct), requestedQty: num(r.requested_qty), plantCode: r.plant_code, urgency: r.urgency,
+		commodityPct: num(r.commodity_pct), secondaryCommodity: r.secondary_commodity || null,
+		secondaryCommodityPct: num(r.secondary_commodity_pct), requestedQty: num(r.requested_qty), plantCode: r.plant_code, urgency: r.urgency,
 	};
 
 	const rows = await run(`
@@ -316,6 +319,23 @@ async function historicalPrice(run: Run, rfq: RfqFacts) {
 		});
 	}
 	const pastSuppliers = [...bySupplier.values()].sort((a, b) => b.lastDate.localeCompare(a.lastDate)).slice(0, 8);
+	// Every supplier's min / max / average over all its orders of this material (the Price History
+	// supplier picker), so the figures don't depend on how many orders the chart carries.
+	const supplierStats = [...bySupplier.values()]
+		.sort((a, b) => b.lastDate.localeCompare(a.lastDate))
+		.map(s => {
+			const prices = orders.filter(o => o.vendorId === s.vendorId).map(o => o.price);
+			return {
+				vendorId: s.vendorId,
+				vendorName: s.vendorName,
+				orders: s.orders,
+				minPrice: s.minPrice,
+				maxPrice: s.maxPrice,
+				avgPrice: round(prices.reduce((sum, p) => sum + p, 0) / prices.length),
+				firstDate: orders.find(o => o.vendorId === s.vendorId)?.date ?? null,
+				lastDate: s.lastDate,
+			};
+		});
 
 	const last = orders[orders.length - 1];
 	const avg12m = avg(last12);
@@ -333,13 +353,14 @@ async function historicalPrice(run: Run, rfq: RfqFacts) {
 		avgAll: orders.length ? round(avg(orders)!) : null,
 		firstDate: orders[0]?.date ?? null,
 		pastSuppliers,
+		supplierStats,
 		orders12m: last12.length,
 		totalOrders: orders.length,
 		trend3mPct: recent !== null && prior !== null ? pct(recent, prior) : null,
 		standardPrice: rfq.standardPrice,
 		series: [...byMonth.entries()].map(([month, ps]) => ({ month, avgPrice: round(ps.reduce((s, p) => s + p, 0) / ps.length), orders: ps.length })),
 		// Every order for the chart, not monthly averages (meeting, 18 Oct: "increase the number of data points"); latest 240.
-		orders: orders.slice(-240).map(o => ({ date: o.date, price: round(o.price), vendorName: o.vendorName })),
+		orders: orders.slice(-240).map(o => ({ date: o.date, price: round(o.price), vendorId: o.vendorId, vendorName: o.vendorName })),
 		rfqDate: rfq.rfqDate,
 		summary: orders.length === 0
 			? `No previous purchase orders for this material; standard price is ${rfq.standardPrice ? inr(rfq.standardPrice) : 'not set'}.`
@@ -388,6 +409,77 @@ async function commodityFeed(run: Run, rfq: RfqFacts) {
 			+ (impactPct !== null && exposure
 				? `; with ${round(exposure * 100, 0)}% exposure that is about ${impactPct >= 0 ? '+' : ''}${impactPct}% on this material's cost.`
 				: '.'),
+	};
+}
+
+/**
+ * The material's cost split as recorded in material_master: the share of its cost that is each
+ * commodity (primary and secondary). The rest of the cost isn't broken down in our data.
+ */
+function costSplit(rfq: RfqFacts) {
+	const parts = [
+		{ commodity: rfq.primaryCommodity, share: rfq.commodityPct },
+		{ commodity: rfq.secondaryCommodity, share: rfq.secondaryCommodityPct },
+	]
+		.filter((p): p is { commodity: string; share: number } => !!p.commodity && p.share !== null && p.share > 0)
+		.map(p => ({ commodity: p.commodity, sharePct: round(p.share * 100, 1) }));
+	return {
+		available: parts.length > 0,
+		source: 'material_master (commodity_pct, secondary_commodity_pct)',
+		commodities: parts,
+		summary: parts.length
+			? parts.map(p => `${p.commodity} ${p.sharePct}%`).join(', ') + ' of this material\'s cost.'
+			: 'No commodity share recorded for this material.',
+	};
+}
+
+/**
+ * Index-based comparison: how the material's commodity indices moved between our last purchase
+ * and this RFQ, and how much of the product's cost that move explains. Only the commodity's share
+ * of the cost moves with its index (an 8% rise at a 60% share is about 4.8%, not 8%).
+ */
+async function indexComparison(run: Run, rfq: RfqFacts, historical: { lastPrice: number | null; lastDate: string | null }) {
+	const split = costSplit(rfq);
+	if (!split.available) return { available: false, summary: split.summary };
+	if (historical.lastPrice === null || !historical.lastDate) {
+		return { available: false, summary: 'No earlier purchase of this material to compare the quotes with.' };
+	}
+	const at = async (code: string, date: string) => {
+		const [r] = await run(`
+			SELECT price_date::text AS price_date, price_inr_per_unit, unit
+			FROM commodity_prices
+			WHERE commodity_code = @code AND price_date <= CAST(@date AS date)
+			ORDER BY price_date DESC LIMIT 1`, { code, date });
+		return r ? { date: r.price_date as string, price: Number(r.price_inr_per_unit), unit: r.unit as string } : null;
+	};
+	const indices = await Promise.all(split.commodities.map(async c => {
+		const [from, to] = await Promise.all([at(c.commodity, historical.lastDate!), at(c.commodity, rfq.rfqDate)]);
+		const changePct = from && to ? pct(to.price, from.price) : null;
+		return {
+			commodity: c.commodity,
+			sharePct: c.sharePct,
+			unit: to?.unit ?? from?.unit ?? null,
+			fromDate: from?.date ?? null,
+			fromPrice: from ? round(from.price) : null,
+			toDate: to?.date ?? null,
+			toPrice: to ? round(to.price) : null,
+			changePct,
+			// The part of the product's cost this index moves.
+			effectPct: changePct !== null ? round(changePct * c.sharePct / 100, 1) : null,
+		};
+	}));
+	const complete = indices.every(i => i.effectPct !== null);
+	const expectedEffectPct = complete ? round(indices.reduce((s, i) => s + (i.effectPct ?? 0), 0), 1) : null;
+	return {
+		available: indices.some(i => i.changePct !== null),
+		baseline: { date: historical.lastDate, price: historical.lastPrice },
+		rfqDate: rfq.rfqDate,
+		indices,
+		expectedEffectPct,
+		indexExplainedPrice: expectedEffectPct !== null ? round(historical.lastPrice * (1 + expectedEffectPct / 100)) : null,
+		summary: expectedEffectPct !== null
+			? `Since our last purchase (${inr(historical.lastPrice)} on ${historical.lastDate}), the commodity indices explain about ${expectedEffectPct >= 0 ? '+' : ''}${expectedEffectPct}% on this material's cost.`
+			: 'Commodity index prices are missing for part of the period.',
 	};
 }
 
@@ -871,6 +963,8 @@ async function marketStudy(run: Run, rfqId: string, online: { refresh?: boolean;
 	const market = {
 		shouldCost: should, historical, commodity, online: marketPrice,
 		sustainability: sustainability(vendors), contract,
+		costSplit: costSplit(rfq),
+		index: await indexComparison(run, rfq, historical),
 	};
 	return { rfq, vendors, requirements, market };
 }
@@ -1110,19 +1204,20 @@ async function runRecommendation(run: Run, rfqId: string, opts: { refresh?: bool
 }
 
 // ============================================================
-// Negotiation strategy (meetings, 18 Oct): for every supplier, five short
-// pointers from our data, the last one the discount to ask for. No script
-// ("get rid of that script"), so no model call.
+// Negotiation strategy: for every supplier, 3–5 points from our data, each with
+// its reason, the data behind it and the action, then the discount to ask for.
+// No script and no model call; missing evidence is listed, never filled in.
 // ============================================================
 
 interface DeliveryRecord {
+	/** Completed deliveries: an actual delivery date on or before today. */
 	delivered: number;
 	late: number;
 	avgDaysLate: number | null;
 	worstDaysLate: number | null;
 }
 
-/** Each vendor's deliveries to us, any material: how many came late, and by how much. */
+/** Each vendor's completed deliveries to us, any material: how many came late, and by how much. */
 async function deliveryRecords(run: Run, vendorIds: string[]): Promise<Map<string, DeliveryRecord>> {
 	const records = new Map<string, DeliveryRecord>();
 	if (!vendorIds.length) return records;
@@ -1134,6 +1229,7 @@ async function deliveryRecords(run: Run, vendorIds: string[]): Promise<Map<strin
 		       max(actual_delivery_date - delivery_date) AS worst_days_late
 		FROM purchase_orders
 		WHERE actual_delivery_date IS NOT NULL AND delivery_date IS NOT NULL
+		  AND actual_delivery_date <= CURRENT_DATE
 		  AND vendor_id IN (${vendorIds.map((_, i) => `@v${i}`).join(', ')})
 		GROUP BY vendor_id`, Object.fromEntries(vendorIds.map((id, i) => [`v${i}`, id])));
 	for (const r of rows) {
@@ -1149,7 +1245,7 @@ async function deliveryRecords(run: Run, vendorIds: string[]): Promise<Map<strin
 }
 
 interface NegotiationAsk {
-	/** % off the quote. */
+	/** % off the quote; 0 when no benchmark sits below it. */
 	pct: number;
 	targetPrice: number;
 	/** On the requested quantity; null when it isn't known. */
@@ -1157,136 +1253,214 @@ interface NegotiationAsk {
 	basis: string;
 }
 
-/** "12.4% above it" / "the same as it". */
-const rel = (p: number, what: string) => (p === 0 ? `the same as ${what}` : `${Math.abs(p)}% ${p > 0 ? 'above' : 'below'} ${what}`);
-const leadingNumber = (s: string | null) => Number(/(\d+)/.exec(s ?? '')?.[1] ?? 0);
+/** A negotiation point: why it's a lever, the figures it rests on (and where from), and what to do. */
+interface StrategyPoint extends Point {
+	reason: string;
+	data: string;
+	action: string;
+}
 
-// Five pointers per supplier: four facts and the ask (review, 18 Oct: "1, 2, 3, 4, 5 pointers", no script).
-const FACT_POINTERS = 4;
+const leadingNumber = (s: string | null) => Number(/(\d+)/.exec(s ?? '')?.[1] ?? 0);
+const signed = (v: number) => `${v >= 0 ? '+' : ''}${v}%`;
+const round05 = (v: number) => Math.round(v * 2) / 2;
+
+/** Evidence points per supplier; with the ask, at most five. */
+const MAX_EVIDENCE_POINTS = 4;
+/** Gaps smaller than this aren't a lever. */
+const MIN_GAP_PCT = 0.5;
 
 /**
- * One supplier's five pointers, one short line each: the first four facts that
- * apply, in the meeting's order (should cost, market price, market trend, delivery
- * record, the other quotes; then what we last paid, their last price to us,
- * delivery time, terms and risk), and the discount to ask for: down to the
- * nearest benchmark under the quote, 1–10% ("even 1% reduction").
+ * The reduction to request on a price gap: a quarter to a half of it (a 4% gap gives 1–2%), so the
+ * ask leaves the supplier room and stays credible; at least 0.5%, at most 10%.
+ */
+function reductionRange(gapPct: number) {
+	const lo = Math.min(10, Math.max(0.5, round05(gapPct * 0.25)));
+	const hi = Math.min(10, Math.max(lo, round05(gapPct * 0.5)));
+	return { lo, hi, text: lo === hi ? `${lo}%` : `${lo}–${hi}%` };
+}
+
+/**
+ * One supplier's negotiation points, each from our data with its source: price against the should
+ * cost or a comparable market price, the other quotes (L-rank), the commodity indices (weighted by
+ * the commodity's share of the cost, never the whole price), their and our past prices, delivery
+ * record, then terms and risk. Only points that give a lever are kept, at most four, then the ask.
+ * Missing evidence is listed rather than filled in.
  */
 function strategyFor(v: RankedVendor, ranking: RankedVendor[], market: any, delivery: Map<string, DeliveryRecord>, qty: number | null) {
-	const facts: Point[] = [];
-	const add = (heading: string, text: string) => facts.push({ heading, text });
+	const points: StrategyPoint[] = [];
+	const missing: string[] = [];
+	const add = (heading: string, reason: string, data: string, action: string) =>
+		points.push({ heading, reason, data, action, text: `${reason} ${action}` });
 	const benchmarks: { label: string; price: number }[] = [];
+	const quote = v.quotedPrice;
+	const quoteData = `quote ${inr(quote)}`;
 
-	// Should cost ("should price is way lesser than quoted price").
+	// 1. Price against the should cost (entered), else a market price on the same delivered basis.
 	const shouldCost = market.shouldCost?.available ? num(market.shouldCost.shouldCost) : null;
-	if (shouldCost) {
-		const p = pct(v.quotedPrice, shouldCost)!;
-		add('Should cost', p > 0
-			? `Quote is ${p}% above the should cost (${inr(shouldCost)}).`
-			: `Quote is ${rel(p, 'the should cost')} (${inr(shouldCost)}): press on terms, not price.`);
-		benchmarks.push({ label: 'the should cost', price: shouldCost });
-	}
-
-	// Market price ("current quoted price is this much, but the market price is this much"):
-	// India's reference price, else a listing that meets the specs from any market.
 	const online = market.online;
-	const listing = online?.fromListing;
-	if (online?.available && online.priceInr && !online.outOfRange && (online.comparable !== false || listing)) {
-		const vs = rel(pct(v.quotedPrice, online.priceInr)!, 'it');
-		add('Market price', !listing
-			? `${inr(online.priceInr)} in the market today; quote is ${vs}.`
-			: listing.currency === 'INR'
-				? `${inr(listing.priceInr)} on ${listing.source} (${listing.region}); quote is ${vs}.`
-				: `${listing.currency} ${Number(listing.price).toLocaleString('en-US')} on ${listing.source} (${listing.region}), about ${inr(listing.priceInr)} before freight and duty; quote is ${vs}.`);
-		// Only a price on a delivered basis like the quotes sets the ask.
-		if (online.comparable !== false) benchmarks.push({ label: 'the market price', price: Number(online.priceInr) });
+	const comparableMarket = online?.available && online.priceInr && !online.outOfRange && online.comparable !== false ? Number(online.priceInr) : null;
+	if (shouldCost) {
+		benchmarks.push({ label: 'the should cost', price: shouldCost });
+		const p = pct(quote, shouldCost)!;
+		if (p > MIN_GAP_PCT) {
+			add('Price', `Quotation is ${p}% above the should cost.`,
+				`${quoteData} vs should cost ${inr(shouldCost)} (material_should_costs${market.shouldCost.source ? `, ${market.shouldCost.source}` : ''}).`,
+				`Request a ${reductionRange(p).text} reduction.`);
+		}
+	} else if (comparableMarket) {
+		benchmarks.push({ label: 'the market price', price: comparableMarket });
+		const p = pct(quote, comparableMarket)!;
+		const listing = online.fromListing;
+		const what = listing ? `${listing.title || 'listing'} on ${listing.source} (${listing.region})` : online.matchedModel || online.basis || 'online reference price';
+		if (p > MIN_GAP_PCT) {
+			add('Price', `Quotation is ${p}% above today's market price.`,
+				`${quoteData} vs market ${inr(comparableMarket)}: ${what} (market search, ${online.asOf ?? 'today'}).`,
+				`Request a ${reductionRange(p).text} reduction, citing the market price.`);
+		}
+	} else {
+		missing.push('a should cost or a market price on a delivered basis');
 	}
 
-	// Market trend ("the expectation is that this cost is going down").
-	const c = market.commodity;
-	if (c?.available && c.change90dPct != null && Math.abs(c.change90dPct) >= 1) {
-		const share = c.exposurePct ? ` (about ${c.exposurePct}% of this item's cost)` : '';
-		add('Market trend', c.change90dPct < 0
-			? `${c.commodity} down ${Math.abs(c.change90dPct)}% in 90 days${share}: the price should come down.`
-			: `${c.commodity} up ${c.change90dPct}% in 90 days${share}: expect them to cite it.`);
-	}
-
-	// Delivery record ("previously your delivery timelines are bad"): a lever only when they were late.
-	const d = delivery.get(v.vendorId);
-	if (d && d.late > 0) {
-		add('Delivery record', `${d.late} of ${d.delivered} deliveries to us were late${d.avgDaysLate ? `, ${d.avgDaysLate} days on average` : ''}: ask for a penalty clause.`);
-	} else if (!d && v.otdPct != null && v.otdPct < 90) {
-		add('Delivery record', `${Math.round(v.otdPct)}% on-time delivery: ask for a penalty clause.`);
-	}
-
-	// Other quotes.
+	// 2. The other technically accepted quotes, and this one's L-rank.
 	const others = ranking.filter(o => o.vendorId !== v.vendorId);
 	const lowest = [...others].sort((a, b) => a.quotedPrice - b.quotedPrice)[0];
-	if (lowest) {
-		add('Other quotes', lowest.quotedPrice < v.quotedPrice
-			? `${lowest.vendorName} (${lowest.tRank}) quoted ${inr(lowest.quotedPrice)}, ${round((1 - lowest.quotedPrice / v.quotedPrice) * 100, 1)}% less.`
-			: `Lowest quote; next is ${lowest.vendorName} at ${inr(lowest.quotedPrice)}.`);
+	if (!lowest) {
+		missing.push('other technically accepted quotations to compare');
+	} else {
 		benchmarks.push({ label: 'the lowest other quote', price: lowest.quotedPrice });
+		if (lowest.quotedPrice < quote) {
+			const gap = round((1 - lowest.quotedPrice / quote) * 100, 1);
+			add('Competition', `Ranked ${v.lRank ?? 'below L1'}: ${lowest.vendorName} (${lowest.tRank}, ${lowest.lRank}) quoted ${gap}% less.`,
+				`${quoteData} vs ${inr(lowest.quotedPrice)} from ${lowest.vendorName} (quotations on this RFQ).`,
+				`Tell them a lower technically accepted quote is on the table and ask them to close the ${gap}% gap.`);
+		}
 	}
 
-	// What we last paid (no averages: review, 18 Oct), and their last price to us for this item.
+	// 3. Commodity indices: only the commodity's share of the cost moves with its index.
+	const idx = market.index;
+	const c = market.commodity;
+	if (idx?.available && idx.expectedEffectPct != null && idx.baseline) {
+		const e = Number(idx.expectedEffectPct);
+		const q = pct(quote, idx.baseline.price)!;
+		const gap = round(q - e, 1);
+		const moves = (idx.indices ?? [])
+			.filter((i: any) => i.changePct != null)
+			.map((i: any) => `${i.commodity} ${signed(i.changePct)} × ${i.sharePct}% share = ${signed(i.effectPct)}`)
+			.join('; ');
+		const data = `${moves}, ${idx.baseline.date} to ${idx.rfqDate} (commodity_prices, material master shares); quote ${signed(q)} vs our last purchase at ${inr(idx.baseline.price)}.`;
+		if (gap > 1) {
+			add('Market trend', `The quote is ${signed(q)} on our last purchase, while commodity indices account for ${signed(e)} on the product's cost.`, data,
+				`Ask them to justify the other ${gap} points or move toward the index-explained ${inr(idx.indexExplainedPrice)}.`);
+		} else if (e <= -1) {
+			add('Market trend', `Commodity indices fell, lowering this product's cost by about ${Math.abs(e)}%.`, data,
+				'Request an updated quotation that reflects the lower input costs.');
+		}
+	} else if (c?.available && c.change90dPct != null && c.exposurePct) {
+		const effect = round((c.change90dPct * c.exposurePct) / 100, 1);
+		const data = `${c.commodity} ${inr(c.latestPrice)} ${c.unit ?? ''} on ${c.latestDate}, ${signed(c.change90dPct)} over 90 days (commodity_prices); ${c.exposurePct}% of this item's cost (material master).`;
+		if (effect <= -1) {
+			add('Market trend', `${c.commodity} fell ${Math.abs(c.change90dPct)}% in 90 days; at its ${c.exposurePct}% share that's about ${Math.abs(effect)}% off this item's cost.`, data,
+				`Request an updated quotation reflecting the lower ${c.commodity} price.`);
+		} else if (effect >= 1) {
+			add('Market trend', `${c.commodity} rose ${c.change90dPct}% in 90 days; at its ${c.exposurePct}% share that's about ${effect}% on this item's cost, not ${c.change90dPct}%.`, data,
+				`If they cite it, accept no more than about ${effect}% on that account.`);
+		}
+	} else {
+		missing.push('commodity index prices for this material');
+	}
+
+	// 4. Their past price to us for this material, else what we last paid anyone.
 	const h = market.historical;
-	if (h?.lastPrice) {
-		add('Our last price', `We last paid ${inr(h.lastPrice)} (${h.lastDate}); quote is ${rel(pct(v.quotedPrice, h.lastPrice)!, 'that')}.`);
-		benchmarks.push({ label: 'what we last paid', price: Number(h.lastPrice) });
-	}
+	// pastSuppliers carries each supplier's last price and date for this material.
 	const own = (h?.pastSuppliers ?? []).find((s: any) => s.vendorId === v.vendorId);
-	if (own) {
-		add('Their last price', `They charged us ${inr(own.lastPrice)} on ${own.lastDate}; quote is ${rel(pct(v.quotedPrice, own.lastPrice)!, 'that')}.`);
-		benchmarks.push({ label: 'their last price to us', price: Number(own.lastPrice) });
+	const ownLast = own ? num(own.lastPrice) : null;
+	if (own && ownLast) {
+		benchmarks.push({ label: 'their last price to us', price: ownLast });
+		const p = pct(quote, ownLast)!;
+		if (p > MIN_GAP_PCT) {
+			add('Supplier history', `Their previous price to us was ${round((1 - ownLast / quote) * 100, 1)}% lower.`,
+				`${quoteData} vs ${inr(ownLast)} they charged on ${own.lastDate} (${own.orders} earlier order${own.orders === 1 ? '' : 's'}, purchase_orders).`,
+				'Ask them to explain the increase and to hold their previous price.');
+		}
+	} else if (h?.lastPrice) {
+		benchmarks.push({ label: 'what we last paid', price: Number(h.lastPrice) });
+		const p = pct(quote, h.lastPrice)!;
+		if (p > MIN_GAP_PCT) {
+			add('Price history', `We last paid ${round((1 - h.lastPrice / quote) * 100, 1)}% less for this material.`,
+				`${quoteData} vs ${inr(h.lastPrice)} on ${h.lastDate} (purchase_orders; no earlier order from this supplier).`,
+				'Use our last price as the reference and ask them to explain the difference.');
+		}
+	} else {
+		missing.push('earlier purchases of this material');
 	}
 
-	// Delivery time, terms and risk.
+	// 5. Delivery record from completed deliveries: a lever when it's below 95% on time.
+	const d = delivery.get(v.vendorId);
+	if (!d || d.delivered === 0) {
+		missing.push('completed deliveries from this supplier');
+	} else {
+		const onTime = d.delivered - d.late;
+		const otd = round((onTime / d.delivered) * 100, 1);
+		if (otd < 95) {
+			add('Delivery', `${otd}% on-time delivery on their past orders.`,
+				`${onTime} of ${d.delivered} completed deliveries on or before the promised date${d.avgDaysLate ? `; late ones ${d.avgDaysLate} days late on average` : ''} (purchase_orders)${d.delivered < 5 ? '; small sample' : ''}.`,
+				'Negotiate firmer delivery commitments: fixed dates with a late-delivery penalty.');
+		}
+	}
+
+	// 6. Delivery time, terms and risk against the other quotes.
 	const fastest = others.filter(o => o.deliveryDays != null).sort((a, b) => a.deliveryDays! - b.deliveryDays!)[0];
 	if (v.deliveryDays != null && fastest && fastest.deliveryDays! < v.deliveryDays) {
-		add('Delivery time', `${v.deliveryDays} days vs ${fastest.deliveryDays} from ${fastest.vendorName}: ask them to match.`);
+		add('Lead time', `${v.deliveryDays} days to deliver, against ${fastest.deliveryDays} from ${fastest.vendorName}.`,
+			'Delivery days on this RFQ\'s quotations.', 'Ask them to match the shorter lead time.');
 	}
 	const betterPay = others.filter(o => leadingNumber(o.paymentTerms) > leadingNumber(v.paymentTerms))
 		.sort((a, b) => leadingNumber(b.paymentTerms) - leadingNumber(a.paymentTerms))[0];
 	const longerWarranty = others.filter(o => (o.warrantyMonths ?? 0) > (v.warrantyMonths ?? 0))
 		.sort((a, b) => (b.warrantyMonths ?? 0) - (a.warrantyMonths ?? 0))[0];
 	const terms = [
-		betterPay && `${betterPay.vendorName} offers ${betterPay.paymentTerms}`,
-		longerWarranty && `${longerWarranty.vendorName} gives ${longerWarranty.warrantyMonths} months' warranty`,
+		betterPay && `${betterPay.vendorName} offers ${betterPay.paymentTerms} (they offer ${v.paymentTerms ?? 'none stated'})`,
+		longerWarranty && `${longerWarranty.vendorName} gives ${longerWarranty.warrantyMonths} months' warranty (they give ${v.warrantyMonths ?? 0})`,
 	].filter(Boolean);
-	if (terms.length) add('Terms', `${terms.join('; ')}: ask them to match.`);
+	if (terms.length) add('Terms', 'Other suppliers offer better terms.', `${terms.join('; ')} (quotations on this RFQ).`, 'Ask them to match those terms.');
 	const risks = [
 		v.qualityPct != null && v.qualityPct < 95 ? `${Math.round(v.qualityPct)}% quality acceptance` : null,
 		v.overallRisk === 'High' || v.financialRiskTier === 'High' ? 'high risk rating' : null,
 		v.sanctionsFlag ? 'sanctions flag' : null,
 	].filter(Boolean);
-	if (risks.length) add('Risk', `${risks.join(' and ')}: ask for guarantees.`);
+	if (risks.length) add('Risk', `Supplier carries ${risks.join(' and ')}.`, `${risks.join('; ')} (supplier_scorecard).`, 'Ask for performance guarantees.');
 
+	// The ask: toward the nearest benchmark below the quote, the same quarter-to-half rule.
 	const nearest = benchmarks
-		.filter(b => b.price > 0 && b.price < v.quotedPrice)
-		.map(b => ({ ...b, gap: (1 - b.price / v.quotedPrice) * 100 }))
+		.filter(b => b.price > 0 && b.price < quote)
+		.map(b => ({ ...b, gap: round((1 - b.price / quote) * 100, 1) }))
+		.filter(b => b.gap > MIN_GAP_PCT)
 		.sort((a, b) => a.gap - b.gap)[0];
-	const askPct = Math.min(10, Math.max(1, Math.round((nearest?.gap ?? 1) * 2) / 2));
-	const targetPrice = round(v.quotedPrice * (1 - askPct / 100));
-	const saving = qty ? round((v.quotedPrice - targetPrice) * qty) : null;
+	const range = nearest ? reductionRange(nearest.gap) : null;
+	const askPct = range ? range.hi : 0;
+	const targetPrice = round(quote * (1 - askPct / 100));
+	const saving = qty && askPct ? round((quote - targetPrice) * qty) : null;
 	const ask: NegotiationAsk = {
 		pct: askPct,
 		targetPrice,
 		saving,
-		basis: !nearest
-			? 'even 1% is worth asking for'
-			: nearest.gap > 10 ? `${nearest.label} is ${round(nearest.gap, 1)}% lower` : `in line with ${nearest.label}`,
+		basis: nearest ? `${nearest.label} is ${nearest.gap}% below the quote` : 'no benchmark below the quote',
 	};
-	return {
-		pointers: [
-			...facts.slice(0, FACT_POINTERS),
-			{ heading: 'Ask', text: `${askPct}% off, to ${inr(targetPrice)}${saving ? ` (saves ${inr(saving)})` : ''}: ${ask.basis}.` },
-		],
-		ask,
-	};
+	const pointers: StrategyPoint[] = points.slice(0, MAX_EVIDENCE_POINTS);
+	if (nearest && range) {
+		pointers.push({
+			heading: 'Ask',
+			reason: `${nearest.label[0].toUpperCase()}${nearest.label.slice(1)} is ${nearest.gap}% below the quote.`,
+			data: `${quoteData} vs ${inr(nearest.price)}; target ${inr(targetPrice)}${saving ? `, saving ${inr(saving)} on ${qty} units` : ''}.`,
+			action: `Open at ${range.hi}% off (${inr(targetPrice)}); settle for no less than ${range.lo}%.`,
+			text: `${range.text} off, to ${inr(targetPrice)}${saving ? ` (saves ${inr(saving)})` : ''}: ${ask.basis}.`,
+		});
+	}
+	return { pointers, ask, missing };
 }
 
 /**
- * Pointers and the ask for every supplier, from our data only: a second or
+ * Points and the ask for every supplier, from our data only: a second or
  * two, no model call. Uses today's web price and market search as far as
  * they're in; the screen asks again once the market search finishes.
  */
@@ -1565,9 +1739,10 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 			// The pointers follow today's market study as it fills in.
 			cache: false,
 			description:
-				'Negotiation pointers for the technically accepted suppliers on an RFQ: five per supplier, from our data (should cost, ' +
-				'today\'s market price, the commodity trend, the supplier\'s late deliveries to us, the other quotes, what we last paid, ' +
-				'delivery time, terms and risk), the last one the discount to ask for. Fast; makes no AI call. ' +
+				'Negotiation points for the technically accepted suppliers on an RFQ: 3–5 per supplier, each with its reason, the data ' +
+				'behind it and the action (should cost or comparable market price, the other quotes and L-rank, commodity indices weighted ' +
+				'by their share of the cost, past prices, delivery record, terms and risk), then the discount to ask for, and the data ' +
+				'that was missing. Fast; makes no AI call. ' +
 				'USE FOR: "how should we negotiate with <supplier> on RFQ-…", negotiation points, the discount to ask for. ' +
 				'DO NOT USE FOR: choosing a supplier (use recommend-rfq-supplier).',
 			params: {
@@ -1579,13 +1754,15 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 				try {
 					const started = Date.now();
 					const { rfq, items } = await negotiationPointers(run, rfqId);
-					const vendors = items.map(({ v, pointers, ask }) => ({
-						vendorId: v.vendorId, vendorName: v.vendorName, quotedPrice: v.quotedPrice, tRank: v.tRank, lRank: v.lRank, pointers, ask,
+					const vendors = items.map(({ v, pointers, ask, missing }) => ({
+						vendorId: v.vendorId, vendorName: v.vendorName, quotedPrice: v.quotedPrice, tRank: v.tRank, lRank: v.lRank, pointers, ask, missing,
 					}));
 					console.log(`[RFQ-RECOMMENDATION] ${rfqId}: negotiation pointers for ${items.length} supplier(s) in ${Date.now() - started} ms`);
 					const rows = vendors.map((v: any) => ({
 						vendorName: v.vendorName, tRank: v.tRank, lRank: v.lRank, quotedPrice: v.quotedPrice,
-						askPct: v.ask.pct, targetPrice: v.ask.targetPrice, pointers: v.pointers.map((p: Point) => `${p.heading}: ${p.text}`).join(' '),
+						askPct: v.ask.pct, targetPrice: v.ask.targetPrice,
+						pointers: v.pointers.map((p: any) => `${p.heading}: ${p.reason ?? p.text} ${p.action ?? ''} [${p.data ?? ''}]`).join(' '),
+						missingData: v.missing.join('; '),
 					}));
 					return {
 						rfqId, material: rfq.materialDesc, unit: rfq.unit, quantity: rfq.requestedQty,
@@ -1604,7 +1781,8 @@ export function createRfqRecommendationTools(execute: ExecuteFn): SourceTool[] {
 					{ name: 'quotedPrice', type: 'number', description: 'Quoted unit price (INR)' },
 					{ name: 'askPct', type: 'number', description: 'Discount to ask for, % off the quote (KPI)' },
 					{ name: 'targetPrice', type: 'number', description: 'Unit price after that discount (INR)' },
-					{ name: 'pointers', type: 'string', description: 'Negotiation pointers from our data' },
+					{ name: 'pointers', type: 'string', description: 'Negotiation points from our data, each with its action and [supporting data]' },
+					{ name: 'missingData', type: 'string', description: 'Evidence that was missing for this supplier' },
 				],
 			},
 		},

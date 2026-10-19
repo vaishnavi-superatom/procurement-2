@@ -4,6 +4,7 @@ import type { ComponentMetadata } from '../../types';
 import { COLORS, TYPOGRAPHY, SPACING, SHADOWS } from '../../design-system/tokens';
 import LoadingState from '../../components/LoadingState';
 import { setTRank, startNegotiation } from '../../data/rfq-workflow';
+import { RANK_HELP, RANK_SUBLABEL } from '../../data/rfq-recommendation';
 import {
   TechnicalEvaluation,
   TRankBadge,
@@ -237,6 +238,55 @@ const RfqStatusBadge: React.FC<{ status: string }> = ({ status }) => {
     >
       {status}
     </span>
+  );
+};
+
+/**
+ * A table row whose panel slides open and shut (height + fade), the same both
+ * ways. Stays mounted through the closing animation, then unmounts, so a
+ * closed panel loads nothing.
+ */
+const EXPAND_MS = 220;
+const ExpandRow: React.FC<{ open: boolean; colSpan: number; children: React.ReactNode }> = ({ open, colSpan, children }) => {
+  const [mounted, setMounted] = useState(open);
+  const [shown, setShown] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      // Two frames so the closed state paints first and the transition runs.
+      const id = requestAnimationFrame(() => requestAnimationFrame(() => setShown(true)));
+      return () => cancelAnimationFrame(id);
+    }
+    setShown(false);
+    const t = setTimeout(() => setMounted(false), EXPAND_MS);
+    return () => clearTimeout(t);
+  }, [open]);
+  if (!mounted) return null;
+  const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  return (
+    <tr>
+      <td
+        colSpan={colSpan}
+        className="p-0"
+        style={{
+          // Separated from the rows around it, and tied to its row by the same accent bar.
+          borderTop: `1px solid ${TEAL.border}`,
+          borderBottom: shown ? `2px solid ${TEAL.border}` : 'none',
+          boxShadow: `inset 3px 0 0 ${TEAL.base}`,
+        }}
+      >
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateRows: shown ? '1fr' : '0fr',
+            opacity: shown ? 1 : 0,
+            transition: reduceMotion ? 'none' : `grid-template-rows ${EXPAND_MS}ms ease, opacity ${EXPAND_MS}ms ease`,
+          }}
+        >
+          <div style={{ overflow: 'hidden', minHeight: 0 }}>{children}</div>
+        </div>
+      </td>
+    </tr>
   );
 };
 
@@ -474,12 +524,12 @@ const RfqListScreen: React.FC<{
       >
         {/* minWidth: in a narrow container the table scrolls sideways instead of
             squeezing columns until the IDs are clipped. */}
-        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: 880 }}>
+        <table className="w-full text-sm border-collapse" style={{ tableLayout: 'fixed', minWidth: 760 }}>
           <colgroup>
             <col style={{ width: '140px' }} />
             <col />
             <col style={{ width: '120px' }} />
-            <col style={{ width: '96px' }} />
+            <col style={{ width: '150px' }} />
             <col style={{ width: '120px' }} />
             <col style={{ width: '140px' }} />
           </colgroup>
@@ -489,7 +539,7 @@ const RfqListScreen: React.FC<{
                 { label: 'RFQ ID', align: 'text-left' },
                 { label: 'Material', align: 'text-left' },
                 { label: 'Linked PR', align: 'text-left' },
-                { label: 'Quotes', align: 'text-right' },
+                { label: 'Invited / Quotes', align: 'text-right' },
                 { label: 'Deadline', align: 'text-left' },
                 { label: 'Status', align: 'text-left' },
               ].map((h) => (
@@ -537,9 +587,14 @@ const RfqListScreen: React.FC<{
                 <td className="px-4 py-3 align-top whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>
                   {row.pr_id}
                 </td>
-                <td className="px-4 py-3 align-top text-right whitespace-nowrap tabular-nums" title="Quotes received / vendors invited">
-                  <span className="font-semibold" style={{ color: COLORS.text.primary }}>{row.quotes_received}</span>
-                  <span style={{ color: COLORS.text.tertiary }}> / {row.vendors_invited}</span>
+                <td
+                  className="px-4 py-3 align-top text-right whitespace-nowrap tabular-nums font-bold"
+                  style={{ color: COLORS.text.primary }}
+                  title={`${row.vendors_invited} vendors invited / ${row.quotes_received} quotes received`}
+                >
+                  {row.vendors_invited}
+                  <span className="font-normal" style={{ color: COLORS.text.tertiary }}> / </span>
+                  {row.quotes_received}
                 </td>
                 <td className="px-4 py-3 align-top whitespace-nowrap" style={{ color: COLORS.text.secondary }}>
                   {formatDate(row.response_deadline)}
@@ -754,12 +809,18 @@ const RfqDetailScreen: React.FC<{
         <button onClick={onBack} className="flex items-center gap-1.5 text-xs font-medium mb-3" style={{ color: TEAL.base }}>
           <Icon icon="mdi:arrow-left" className="w-4 h-4" /> Back to RFQs Received
         </button>
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mb-4">
           <h1 className="text-xl font-bold" style={{ color: COLORS.text.primary }}>
             {/^rfq/i.test(header.rfq_id) ? header.rfq_id : `RFQ ${header.rfq_id}`}
           </h1>
           <RfqStatusBadge status={header.rfq_status} />
           {header.urgency && <UrgencyBadge urgency={header.urgency} />}
+          {/* The two numbers the buyer checks first, straight from the RFQ record. */}
+          <p className="ml-auto text-sm font-bold tabular-nums whitespace-nowrap" style={{ color: COLORS.text.primary }}>
+            {header.vendors_invited} Vendor{header.vendors_invited === 1 ? '' : 's'} Invited
+            <span className="mx-1.5 font-normal" style={{ color: COLORS.text.tertiary }}>/</span>
+            {header.quotes_received} Quote{header.quotes_received === 1 ? '' : 's'} Received
+          </p>
         </div>
 
         {/* Key info — one small box */}
@@ -774,8 +835,6 @@ const RfqDetailScreen: React.FC<{
             ['Plant', header.plant_code || '—'],
             ['RFQ Date', formatDate(header.rfq_date)],
             ['Deadline', formatDate(header.response_deadline)],
-            ['Vendors Invited', String(header.vendors_invited)],
-            ['Quotes Received', String(header.quotes_received)],
             ['Negotiation Rounds', String(header.negotiation_rounds)],
           ].map(([label, value]) => (
             <div key={label} className="flex items-baseline gap-1.5">
@@ -805,7 +864,7 @@ const RfqDetailScreen: React.FC<{
                   style={{ color: TEAL.base }}
                 >
                   <Icon icon="mdi:information-outline" className="w-3.5 h-3.5" />
-                  What do T-ranks mean?
+                  What do T-ranks (technical bid rankings) mean?
                 </button>
               )}
             </div>
@@ -837,11 +896,21 @@ const RfqDetailScreen: React.FC<{
               <thead>
                 <tr style={{ backgroundColor: COLORS.lightBackground }}>
                   {['Vendor', 'Quoted Price', 'Qty', 'Delivery', 'Payment Terms', 'Warranty', 'T-Rank'].map((h) => (
-                    <th key={h} className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide" style={{ color: COLORS.text.secondary }}>
+                    <th
+                      key={h}
+                      title={RANK_HELP[h]}
+                      className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
+                      style={{ color: COLORS.text.secondary }}
+                    >
                       {h}
+                      {RANK_SUBLABEL[h] && (
+                        <span className="block text-[10px] font-medium normal-case tracking-normal" style={{ color: COLORS.text.tertiary }}>
+                          {RANK_SUBLABEL[h]}
+                        </span>
+                      )}
                     </th>
                   ))}
-                  <th className="w-12" />
+                  <th className="w-10" />
                 </tr>
               </thead>
               <tbody>
@@ -853,13 +922,15 @@ const RfqDetailScreen: React.FC<{
                     onClick={() => setExpandedQuoteId(expanded ? null : q.quote_id)}
                     aria-expanded={expanded}
                     title={expanded ? 'Click to collapse' : 'Click to see the technical evaluation'}
-                    className="cursor-pointer"
+                    className="cursor-pointer transition-colors duration-200"
                     style={{
-                      borderTop: `1px solid ${COLORS.lightGray}`,
+                      borderTop: `1px solid ${expanded ? TEAL.border : COLORS.lightGray}`,
                       backgroundColor: q.is_awarded ? TEAL.tint : expanded ? COLORS.lightBackground : 'transparent',
+                      // An accent bar down the open row and its panel, so they read as one block.
+                      boxShadow: expanded ? `inset 3px 0 0 ${TEAL.base}` : undefined,
                     }}
                   >
-                    <td className="px-4 py-2" style={{ color: COLORS.text.primary }}>
+                    <td className="px-3 py-2" style={{ color: COLORS.text.primary }}>
                       {/* One line per vendor; its type and city on hover, to keep the page short. */}
                       <span className="font-medium" title={[q.vendor_type, [q.city, q.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}>
                         {q.vendor_name || q.vendor_id}
@@ -873,28 +944,31 @@ const RfqDetailScreen: React.FC<{
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2 font-medium" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.delivery_days} days</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
-                    <td className="px-4 py-2" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
-                    <td className="px-4 py-2">
+                    <td className="px-3 py-2 font-medium whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>{formatINR(q.quoted_price)}</td>
+                    <td className="px-3 py-2 tabular-nums" style={{ color: COLORS.text.secondary }}>{q.quoted_qty}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{q.delivery_days} days</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{q.payment_terms}</td>
+                    <td className="px-3 py-2 whitespace-nowrap" style={{ color: COLORS.text.secondary }}>{q.warranty_months} mo</td>
+                    <td className="px-3 py-2">
                       <TRankBadge rank={tRankOf(q.quote_id)} />
                     </td>
                     {/* Arrow at the row's right end, so the row reads as one that opens (review, 18 Oct: "nothing is saying that you can" open it). */}
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-3 py-2 text-right">
                       <span
                         aria-hidden
                         className="inline-flex items-center justify-center w-5 h-5 rounded-full"
-                        style={{ backgroundColor: TEAL.tint, color: TEAL.base }}
+                        style={{
+                          backgroundColor: expanded ? TEAL.base : TEAL.tint,
+                          color: expanded ? COLORS.white : TEAL.base,
+                          transition: 'transform 200ms ease, background-color 200ms ease',
+                          transform: expanded ? 'rotate(180deg)' : 'none',
+                        }}
                       >
-                        <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} className="w-4 h-4" />
+                        <Icon icon="mdi:chevron-down" className="w-4 h-4" />
                       </span>
                     </td>
                   </tr>
-                  {expanded && (
-                    <tr>
-                      <td colSpan={8} className="p-0" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                  <ExpandRow open={expanded} colSpan={8}>
                         <TechnicalEvaluation
                           rfqId={header.rfq_id}
                           vendorId={q.vendor_id}
@@ -924,9 +998,7 @@ const RfqDetailScreen: React.FC<{
                             Collapse {q.vendor_name || q.vendor_id}
                           </button>
                         </div>
-                      </td>
-                    </tr>
-                  )}
+                  </ExpandRow>
                   </React.Fragment>
                   );
                 })}
@@ -934,13 +1006,15 @@ const RfqDetailScreen: React.FC<{
             </table>
           )}
         </div>
+      </div>
 
         {/* Hands off the linked PR, this RFQ, and the leading supplier to
             Active Negotiations. Disabled when there's no quotation to
             negotiate from (see onStartNegotiation / negotiationSupported above).
             This is the buyer actively entering negotiation, so an RFQ still
-            "RFQ Received" moves to "In Negotiation" first. */}
-        <div className="flex items-center justify-end gap-3">
+            "RFQ Received" moves to "In Negotiation" first. Pinned under the
+            scrolling list, so the next step stays in view. */}
+        <div className="flex-shrink-0 flex items-center justify-end gap-3 pt-3 mt-3" style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
           {startError && (
             <span className="text-xs mr-auto" style={{ color: '#475569' }}>
               Couldn't start the negotiation: {startError}
@@ -982,7 +1056,6 @@ const RfqDetailScreen: React.FC<{
             {starting ? 'Starting…' : 'Start Negotiation'}
           </button>
         </div>
-      </div>
     </div>
   );
 };

@@ -4,7 +4,9 @@ import ReactECharts from 'echarts-for-react';
 import { COLORS, SHADOWS } from '../../design-system/tokens';
 import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
 import type {
+  CostSplit,
   HistoricalPrice,
+  IndexComparison,
   MarketInputs,
   MarketListing,
   MarketSearch,
@@ -141,12 +143,10 @@ const QuotesVsShouldCost: React.FC<{ quotes: QuoteRef[]; shouldCost: number | nu
  * What we paid, order by order: one line, so no legend (the card title names it). The current
  * quotes sit in the boxes above it, not on the chart (review, 19 Oct: "remove these dots").
  */
-const PriceHistoryChart: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
-  // Every order; a study saved before the per-order list falls back to monthly averages.
-  const points = data.orders?.length
-    ? data.orders.map((o) => ({ t: Date.parse(o.date), price: o.price, who: o.vendorName }))
-    : (data.series ?? []).map((s) => ({ t: Date.parse(`${s.month}-15`), price: s.avgPrice, who: `Average of ${s.orders} order${s.orders === 1 ? '' : 's'}` }));
-  if (points.length < 2) return null;
+const PriceHistoryChart: React.FC<{ orders: NonNullable<HistoricalPrice['orders']> }> = ({ orders }) => {
+  // One supplier's orders of this material (the picker above chooses whose).
+  const points = orders.map((o) => ({ t: Date.parse(o.date), price: o.price, who: o.vendorName }));
+  if (points.length === 0) return null;
   const dates = points.map((p) => p.t);
   const option = {
     animation: false,
@@ -162,6 +162,9 @@ const PriceHistoryChart: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
     yAxis: {
       type: 'value',
       scale: true,
+      // Unit price per order (purchase_orders.unit_price), never the order's total value.
+      name: 'Unit price',
+      nameTextStyle: { color: MUTED, fontSize: 10, align: 'left' },
       axisLabel: { color: MUTED, fontSize: 10, formatter: compactINR },
       splitLine: { lineStyle: { color: GRID } },
     },
@@ -185,6 +188,7 @@ const PriceHistoryChart: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
         name: 'What we paid',
         type: 'line',
         data: points.map((p) => [p.t, p.price]),
+        // A lone order still shows as a dot.
         showSymbol: points.length <= 60,
         symbol: 'circle',
         symbolSize: 8,
@@ -194,11 +198,41 @@ const PriceHistoryChart: React.FC<{ data: HistoricalPrice }> = ({ data }) => {
     ],
   };
   return (
-    <div role="img" aria-label="What we paid for this item, order by order">
+    <div role="img" aria-label={`What we paid ${points[0].who} for this item, order by order`}>
       <ReactECharts option={option} notMerge opts={{ renderer: 'svg' }} style={{ height: 180, width: '100%' }} />
     </div>
   );
 };
+
+/** A supplier in the Price History picker: anyone quoting now, then anyone we've bought this material from. */
+interface HistorySupplier {
+  vendorId: string;
+  vendorName: string;
+  tRank: string | null;
+  quoting: boolean;
+}
+
+/**
+ * A supplier's min / max / average for this material. From the backend's figures over all its orders
+ * when present; a study saved before 19 Oct only has the latest 240 orders (and maybe no vendor ids), so
+ * the figures come from those, matched by id or else by name, and say so.
+ */
+function statsFor(data: HistoricalPrice, s: HistorySupplier) {
+  const all = data.orders ?? [];
+  const mine = all.filter((o) => (o.vendorId ? o.vendorId === s.vendorId : o.vendorName === s.vendorName));
+  const full = data.supplierStats?.find((x) => x.vendorId === s.vendorId);
+  if (full) return { orders: mine, min: full.minPrice, max: full.maxPrice, avg: full.avgPrice, count: full.orders, fromChartOnly: false };
+  if (mine.length === 0) return { orders: mine, min: null, max: null, avg: null, count: 0, fromChartOnly: false };
+  const prices = mine.map((o) => o.price);
+  return {
+    orders: mine,
+    min: Math.min(...prices),
+    max: Math.max(...prices),
+    avg: prices.reduce((sum, p) => sum + p, 0) / prices.length,
+    count: mine.length,
+    fromChartOnly: true,
+  };
+}
 
 /** A labelled figure; several sit on one line to compare at a glance. */
 const Figure: React.FC<{ label: React.ReactNode; value: string; unit?: string; sub?: string; strong?: boolean }> = ({ label, value, unit, sub, strong }) => (
@@ -217,8 +251,8 @@ const Figure: React.FC<{ label: React.ReactNode; value: string; unit?: string; s
 
 /** `hint`: one line saying what the card is, for inputs that aren't self-explanatory. */
 // No 1–5 numbers on the cards (review, 18 Oct).
-const Card: React.FC<{ title: string; hint?: string; children: React.ReactNode }> = ({ title, hint, children }) => (
-  <div className="rounded-lg p-3 flex flex-col gap-1.5 min-w-0" style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white }}>
+const Card: React.FC<{ title: string; hint?: string; className?: string; children: React.ReactNode }> = ({ title, hint, className = '', children }) => (
+  <div className={`rounded-lg p-3 flex flex-col gap-1.5 min-w-0 ${className}`} style={{ border: `1px solid ${TEAL.border}`, backgroundColor: COLORS.white }}>
     <span className="text-[11px] font-semibold uppercase tracking-wide truncate" style={{ color: COLORS.text.secondary }}>{title}</span>
     {hint && <p className="text-[11px] leading-snug" style={{ color: COLORS.text.tertiary }}>{hint}</p>}
     {children}
@@ -238,42 +272,380 @@ const Unavailable: React.FC<{ text: string }> = ({ text }) => (
   <p className="text-xs" style={{ color: COLORS.text.tertiary }}>{text}</p>
 );
 
-// The should cost's parts, from Ashish's breakdown (review, 18 Oct: "bill of material cost, service cost, margin").
-const SHOULD_COST_PARTS: { label: string; match: RegExp }[] = [
-  { label: 'Bill of material cost', match: /bill|bom|material/i },
-  { label: 'Service cost', match: /service|manpower|labou?r/i },
-  { label: 'Margin', match: /margin|profit/i },
+// ============================================================
+// Should cost: one per product, the same for every supplier.
+//   Should cost = Raw Material/BOM + Machining/Conversion + IP/Licensing + Overhead
+//                 + Logistics + Packaging + Supplier margin
+// Where the figures come from, in order:
+//   1. Entered figures (material_should_costs), when the team has entered them: real amounts.
+//   2. Otherwise the market price the recommendation uses, split by this material's commodity
+//      shares from material_master (the only product-level split in our data). Those amounts are
+//      estimates (a share of the market price), and any component without a share is Unavailable,
+//      never guessed.
+// ============================================================
+
+const UNAVAILABLE = 'Unavailable';
+
+/** The seven components, and the labels that match them in entered material_should_costs lines. */
+const SHOULD_COST_COMPONENTS: { key: string; label: string; match: RegExp; what: string }[] = [
+  { key: 'bom', label: 'Raw Material / BOM', match: /bill|bom|raw|material/i, what: 'Materials and bought-out parts' },
+  { key: 'conversion', label: 'Machining / Conversion', match: /machin|conversion|process|labou?r|manpower/i, what: 'Turning the materials into the product' },
+  { key: 'ip', label: 'IP / Licensing', match: /\bip\b|licen|royalt|patent/i, what: 'Design rights and licences' },
+  { key: 'overhead', label: 'Overhead', match: /overhead|admin/i, what: "Plant and administrative costs" },
+  { key: 'logistics', label: 'Logistics', match: /freight|logistic|transport|handling|shipping/i, what: 'Freight and handling to our plant' },
+  { key: 'packaging', label: 'Packaging', match: /packag|packing/i, what: 'Packing for transport and storage' },
+  { key: 'margin', label: 'Supplier margin', match: /margin|profit/i, what: "The supplier's profit" },
 ];
 
-/** What the item should cost us, in its parts, against every quote (Ashish provides the figures). */
-const ShouldCostCard: React.FC<{ data: ShouldCost | null; loading: boolean; quotes: QuoteRef[]; unit?: string }> = ({ data, loading, quotes, unit }) => {
-  const value = data?.available && data.shouldCost != null ? data.shouldCost : null;
-  const part = (match: RegExp) => data?.breakdown?.find((b) => match.test(b.label))?.amount ?? null;
+/** In material_master, LABOR is the conversion share; every other commodity is a raw material. */
+const LABOUR_COMMODITY = 'LABOR';
+
+interface ShouldCostRow {
+  key: string;
+  label: string;
+  what: string;
+  /** Share of the should cost, %. */
+  pct: number | null;
+  amount: number | null;
+  basis: string;
+  /** An amount apportioned from a share, not an entered cost. */
+  estimate: boolean;
+}
+
+const sameUnit = (a?: string | null, b?: string | null) => !a || !b || a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** The benchmark: the market price already used for the recommendation, else today's best listing. */
+function benchmarkOf(online: OnlinePrice | null, search: MarketSearch | null): { amount: number; unit: string | null; source: string } | null {
+  if (online?.available && online.priceInr != null) {
+    const what = online.matchedModel ? `${online.matchedModel}${online.basis ? `, ${online.basis}` : ''}` : online.basis || 'Online market price';
+    return { amount: online.priceInr, unit: online.unit ?? null, source: what };
+  }
+  const l = search?.bestListing;
+  if (l && l.priceInr != null) {
+    return { amount: l.priceInr, unit: l.unit || null, source: `${l.region} listing on ${l.source}${l.currency !== 'INR' ? ', before freight and import duty' : ''}` };
+  }
+  return null;
+}
+
+/** The product's should cost, component by component, from the best data we have (see above). */
+function shouldCostModel(entered: ShouldCost | null, split: CostSplit | null | undefined, benchmark: ReturnType<typeof benchmarkOf>) {
+  // 1. Entered figures.
+  if (entered?.available && entered.shouldCost != null && entered.breakdown?.length) {
+    const total = entered.shouldCost;
+    const rows: ShouldCostRow[] = SHOULD_COST_COMPONENTS.map((c) => {
+      const line = entered.breakdown!.find((b) => c.match.test(b.label));
+      return {
+        key: c.key,
+        label: c.label,
+        what: c.what,
+        amount: line ? line.amount : null,
+        pct: line && total ? (line.amount / total) * 100 : null,
+        basis: line ? `Entered: ${line.label}` : 'Not entered for this material',
+        estimate: false,
+      };
+    });
+    return { total, unit: entered.unit ?? null, totalBasis: `Entered should cost${entered.source ? ` (${entered.source})` : ''}`, rows, estimated: false };
+  }
+
+  // 2. The market price, split by this material's commodity shares.
+  const total = benchmark?.amount ?? null;
+  const shares = split?.available ? split.commodities ?? [] : [];
+  const raw = shares.filter((c) => c.commodity !== LABOUR_COMMODITY);
+  const labour = shares.filter((c) => c.commodity === LABOUR_COMMODITY);
+  const fromShares = (list: { commodity: string; sharePct: number }[]) => {
+    if (list.length === 0) return null;
+    const pct = list.reduce((s, c) => s + c.sharePct, 0);
+    return { pct, basis: `${list.map((c) => `${c.commodity} ${c.sharePct}%`).join(' + ')} of cost (material master)` };
+  };
+  const known: Record<string, ReturnType<typeof fromShares>> = { bom: fromShares(raw), conversion: fromShares(labour) };
+  const rows: ShouldCostRow[] = SHOULD_COST_COMPONENTS.map((c) => {
+    const share = known[c.key];
+    return {
+      key: c.key,
+      label: c.label,
+      what: c.what,
+      pct: share?.pct ?? null,
+      amount: share && total != null ? (total * share.pct) / 100 : null,
+      basis: share?.basis ?? 'Not recorded for this material',
+      estimate: !!share,
+    };
+  });
+  return { total, unit: benchmark?.unit ?? null, totalBasis: benchmark ? `Market price: ${benchmark.source}` : null, rows, estimated: true };
+}
+
+const signedPct = (v: number | null | undefined, digits = 1) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(digits)}%`);
+
+/**
+ * What the product should cost delivered to us, part by part, once for all suppliers, so the buyer
+ * can hold every quote against it. Sits at the bottom of the study, full width.
+ */
+const ShouldCostCard: React.FC<{
+  entered: ShouldCost | null;
+  split: CostSplit | null | undefined;
+  online: OnlinePrice | null;
+  marketSearch: MarketSearch | null;
+  loading: boolean;
+  quotes: QuoteRef[];
+  unit?: string;
+  productName?: string;
+}> = ({ entered, split, online, marketSearch, loading, quotes, unit, productName }) => {
+  const benchmark = benchmarkOf(online, marketSearch);
+  const model = shouldCostModel(entered, split, benchmark);
+  const { total, rows } = model;
+  const knownPct = rows.reduce((s, r) => s + (r.pct ?? 0), 0);
+  // The part of the cost our data doesn't split into components.
+  const restPct = total != null && model.estimated ? Math.max(0, 100 - knownPct) : 0;
+  const restAmount = total != null ? (total * restPct) / 100 : null;
+  const shownUnit = model.unit || unit;
+  const unitMismatch = total != null && !sameUnit(model.unit, unit);
   const ranked = [...quotes].sort(byTRank);
+  const lowest = ranked.length ? Math.min(...ranked.map((q) => q.price)) : null;
+  const anyEstimate = rows.some((r) => r.estimate);
+
+  const formulaNumbers = [
+    ...rows.map((r) => (r.amount != null ? `${formatINR(r.amount)}${r.estimate ? '*' : ''}` : UNAVAILABLE)),
+    ...(restPct > 0.05 && restAmount != null ? [`${formatINR(restAmount)}* not broken down`] : []),
+  ].join(' + ');
+
   return (
-    <Card title="Should cost">
-      {/* The placeholder alone while loading, then the chart: not both at once (review, 19 Oct). */}
-      {loading ? (
-        <Skeleton lines={2} />
+    <Card title={productName ? `Should cost · ${productName}` : 'Should cost'} className="lg:col-span-2">
+      {loading && total == null ? (
+        <>
+          <Skeleton lines={2} />
+          <p className="text-[11px] flex items-center gap-1" style={{ color: COLORS.text.tertiary }}>
+            <Icon icon="mdi:earth" className="w-3.5 h-3.5" /> Waiting for the market price to build the should cost…
+          </p>
+        </>
       ) : (
         <>
-          {/* The figures only once Ashish's are in: no empty boxes until then (review, 19 Oct). */}
-          {value != null && (
-            <div className="flex flex-wrap gap-2">
-              {SHOULD_COST_PARTS.map((p) => {
-                const amount = part(p.match);
-                return amount != null ? <Figure key={p.label} label={p.label} value={formatINR(amount)} /> : null;
-              })}
-              <Figure strong label="Should cost" value={formatINR(value)} unit={data?.unit ?? unit} />
+          {/* The final value, up front: one for the product, not one per supplier */}
+          <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
+            <div className="rounded-md px-3 py-2" style={{ backgroundColor: TEAL.tint, border: `1px solid ${TEAL.border}` }}>
+              <div className="text-[11px]" style={{ color: COLORS.text.secondary }}>Should cost, every supplier</div>
+              <p className="text-xl font-bold leading-tight whitespace-nowrap" style={{ color: total != null ? COLORS.text.primary : COLORS.text.tertiary }}>
+                {total != null ? formatINR(total) : UNAVAILABLE}
+                {total != null && shownUnit && <span className="text-xs font-normal" style={{ color: COLORS.text.tertiary }}> / {shownUnit}</span>}
+              </p>
             </div>
+            {anyEstimate && (
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold mb-1" style={{ backgroundColor: '#FEF3C7', color: '#B45309' }}>
+                * Estimate: split by this material's commodity shares
+              </span>
+            )}
+            {total != null && lowest != null && !unitMismatch && (
+              <span className="text-[11px] mb-1.5" style={{ color: COLORS.text.secondary }}>
+                Lowest quote {formatINR(lowest)} is {vsText(lowest, total)} the should cost
+              </span>
+            )}
+          </div>
+          {model.totalBasis && (
+            <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>Total from: {model.totalBasis}</p>
           )}
-          {value != null && ranked.length > 0 && (
-            <p className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.text.secondary }}>
-              <span aria-hidden className="inline-block flex-none" style={{ width: 2, height: 12, backgroundColor: COLORS.text.primary }} />
-              Should cost line
+          {total == null && (
+            <p className="text-[11px]" style={{ color: COLORS.text.tertiary }}>
+              No should cost has been entered for this material and no market price has been found yet, so there's no total to split.
             </p>
           )}
-          <QuotesVsShouldCost quotes={ranked} shouldCost={value} />
+          {unitMismatch && (
+            <p className="text-[11px]" style={{ color: '#B45309' }}>
+              The should cost is priced per {model.unit} and the quotes per {unit}, so they aren't compared here.
+            </p>
+          )}
+
+          {/* Formula and the numbers that go into it */}
+          <div className="rounded-md px-3 py-2 mt-1 text-[11px] space-y-0.5" style={{ backgroundColor: COLORS.lightBackground, border: `1px solid ${COLORS.lightGray}` }}>
+            <p style={{ color: COLORS.text.secondary }}>
+              <span className="font-semibold" style={{ color: COLORS.text.primary }}>Formula: </span>
+              Should cost = Raw Material/BOM + Machining/Conversion + IP/Licensing + Overhead + Logistics + Packaging + Supplier margin
+            </p>
+            <p className="tabular-nums" style={{ color: COLORS.text.secondary }}>
+              = {formulaNumbers} = <b style={{ color: COLORS.text.primary }}>{total != null ? formatINR(total) : UNAVAILABLE}</b>
+            </p>
+            {model.estimated && (
+              <p style={{ color: COLORS.text.tertiary }}>
+                The split is this material's, so it's the same for every supplier. Components with no recorded share are Unavailable;
+                their combined share is shown as "not broken down".
+              </p>
+            )}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr style={{ color: COLORS.text.tertiary }}>
+                  {['Component', 'Basis', 'Share', 'Amount'].map((h) => (
+                    <th key={h} className={`${h === 'Share' || h === 'Amount' ? 'text-right' : 'text-left'} font-medium py-1 pr-3 whitespace-nowrap`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.key} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                    <td className="py-1.5 pr-3 align-top">
+                      <div className="font-medium whitespace-nowrap" style={{ color: COLORS.text.primary }}>{r.label}</div>
+                      <div style={{ color: COLORS.text.tertiary }}>{r.what}</div>
+                    </td>
+                    <td className="py-1.5 pr-3 align-top" style={{ color: COLORS.text.secondary }}>{r.basis}</td>
+                    <td className="py-1.5 pr-3 align-top text-right whitespace-nowrap tabular-nums" style={{ color: r.pct != null ? COLORS.text.primary : COLORS.text.tertiary }}>
+                      {r.pct != null ? `${r.pct.toFixed(1)}%` : UNAVAILABLE}
+                    </td>
+                    <td className="py-1.5 pr-3 align-top text-right whitespace-nowrap tabular-nums" style={{ color: r.amount != null ? COLORS.text.primary : COLORS.text.tertiary }}>
+                      {r.amount != null ? `${formatINR(r.amount)}${r.estimate ? '*' : ''}` : UNAVAILABLE}
+                    </td>
+                  </tr>
+                ))}
+                {restPct > 0.05 && (
+                  <tr style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                    <td className="py-1.5 pr-3 align-top">
+                      <div className="font-medium whitespace-nowrap" style={{ color: COLORS.text.secondary }}>Not broken down</div>
+                      <div style={{ color: COLORS.text.tertiary }}>The unavailable components above, together</div>
+                    </td>
+                    <td className="py-1.5 pr-3 align-top" style={{ color: COLORS.text.secondary }}>Rest of the total</td>
+                    <td className="py-1.5 pr-3 align-top text-right whitespace-nowrap tabular-nums" style={{ color: COLORS.text.secondary }}>{restPct.toFixed(1)}%</td>
+                    <td className="py-1.5 pr-3 align-top text-right whitespace-nowrap tabular-nums" style={{ color: COLORS.text.secondary }}>
+                      {restAmount != null ? `${formatINR(restAmount)}*` : UNAVAILABLE}
+                    </td>
+                  </tr>
+                )}
+                <tr style={{ borderTop: `1px solid ${TEAL.border}` }}>
+                  <td className="py-1.5 pr-3 font-semibold" style={{ color: COLORS.text.primary }} colSpan={2}>Should cost</td>
+                  <td className="py-1.5 pr-3 text-right tabular-nums" style={{ color: COLORS.text.secondary }}>{total != null ? '100%' : '—'}</td>
+                  <td className="py-1.5 pr-3 text-right font-bold whitespace-nowrap tabular-nums" style={{ color: COLORS.text.primary }}>
+                    {total != null ? formatINR(total) : UNAVAILABLE}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {total != null && !unitMismatch && ranked.length > 0 && (
+            <>
+              <p className="flex items-center gap-1.5 text-[11px] mt-1" style={{ color: COLORS.text.secondary }}>
+                <span aria-hidden className="inline-block flex-none" style={{ width: 2, height: 12, backgroundColor: COLORS.text.primary }} />
+                Should cost line
+              </p>
+              <QuotesVsShouldCost quotes={ranked} shouldCost={total} />
+            </>
+          )}
+
+          <p className="text-[11px] leading-snug mt-1" style={{ color: COLORS.text.tertiary }}>
+            <span className="font-semibold" style={{ color: COLORS.text.secondary }}>Why it matters: </span>
+            Should cost is a fair, independent estimate of what this product ought to cost delivered to us. Holding each quotation against it
+            shows which suppliers are priced above a reasonable cost, and by how much, so the buyer knows where there is room to negotiate.
+          </p>
+        </>
+      )}
+    </Card>
+  );
+};
+
+/**
+ * Index-based price comparison: how the material's commodity indices moved between our last purchase
+ * and this RFQ, the part of the product's cost that move explains, and each quote against it.
+ */
+const IndexComparisonCard: React.FC<{ data: IndexComparison | null | undefined; loading: boolean; quotes: QuoteRef[]; unit?: string }> = ({
+  data,
+  loading,
+  quotes,
+  unit,
+}) => {
+  const ranked = [...quotes].sort(byTRank);
+  return (
+    <Card
+      title="Index-based price comparison"
+      hint="Only the commodity's share of the product's cost moves with its index: an 8% rise in a commodity that is 60% of the cost explains about 4.8%, not 8%."
+    >
+      {loading ? (
+        <Skeleton />
+      ) : !data ? (
+        <Unavailable text="Not in this saved analysis. Re-run the Market Analysis to see it." />
+      ) : !data.available || !data.baseline ? (
+        <Unavailable text={data.summary} />
+      ) : (
+        <>
+          <p className="text-[11px]" style={{ color: COLORS.text.secondary }}>
+            From our last purchase, <b style={{ color: COLORS.text.primary }}>{formatINR(data.baseline.price)}</b>
+            {unit && ` / ${unit}`} on {formatDay(data.baseline.date)}, to this RFQ on {formatDay(data.rfqDate)}.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr style={{ color: COLORS.text.tertiary }}>
+                  {['Index', 'Share of cost', 'Index change', 'Effect on cost'].map((h) => (
+                    <th key={h} className={`${h === 'Index' ? 'text-left' : 'text-right'} font-medium py-1 pr-3 whitespace-nowrap`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(data.indices ?? []).map((i) => (
+                  <tr key={i.commodity} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                    <td
+                      className="py-1 pr-3 font-medium"
+                      style={{ color: COLORS.text.primary }}
+                      title={
+                        i.fromPrice != null && i.toPrice != null
+                          ? `${formatINR(i.fromPrice)} (${formatDay(i.fromDate)}) → ${formatINR(i.toPrice)} (${formatDay(i.toDate)})${i.unit ? ` ${i.unit}` : ''}`
+                          : 'No index price for part of the period'
+                      }
+                    >
+                      {i.commodity}
+                    </td>
+                    <td className="py-1 pr-3 text-right tabular-nums" style={{ color: COLORS.text.secondary }}>{i.sharePct}%</td>
+                    <td className="py-1 pr-3 text-right tabular-nums" style={{ color: COLORS.text.secondary }}>{signedPct(i.changePct)}</td>
+                    <td className="py-1 pr-3 text-right tabular-nums font-semibold" style={{ color: COLORS.text.primary }}>{signedPct(i.effectPct)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {data.expectedEffectPct != null && (
+            <div className="flex flex-wrap gap-2">
+              <Figure strong label="Indices explain" value={signedPct(data.expectedEffectPct)} />
+              {data.indexExplainedPrice != null && <Figure label="Index-explained price" value={formatINR(data.indexExplainedPrice)} unit={unit} />}
+            </div>
+          )}
+          {ranked.length > 0 && data.expectedEffectPct != null && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr style={{ color: COLORS.text.tertiary }}>
+                    {['Supplier', 'Quote', 'vs last purchase', 'Beyond the index'].map((h) => (
+                      <th key={h} className={`${h === 'Supplier' ? 'text-left' : 'text-right'} font-medium py-1 pr-3 whitespace-nowrap`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {ranked.map((q) => {
+                    const change = ((q.price - data.baseline!.price) / data.baseline!.price) * 100;
+                    const gap = change - (data.expectedEffectPct as number);
+                    return (
+                      <tr key={q.vendorId} style={{ borderTop: `1px solid ${COLORS.lightGray}` }}>
+                        <td className="py-1 pr-3" style={{ color: COLORS.text.primary }}>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="truncate">{q.vendorName}</span>
+                            <TRankBadge rank={q.tRank} />
+                          </span>
+                        </td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap" style={{ color: COLORS.text.primary }}>{formatINR(q.price)}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums" style={{ color: COLORS.text.secondary }}>{signedPct(change)}</td>
+                        <td
+                          className="py-1 pr-3 text-right tabular-nums font-semibold whitespace-nowrap"
+                          style={{ color: gap > 0 ? '#B45309' : '#16A34A' }}
+                          title="Quote change minus the change the indices explain, in percentage points"
+                        >
+                          {gap > 0 ? '+' : ''}{gap.toFixed(1)} pts
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-[10px] leading-snug" style={{ color: COLORS.text.tertiary }}>
+            Positive "beyond the index" means the quote rose more than the commodity indices explain. The rest of the cost (conversion,
+            overhead, logistics, margin) isn't indexed in our data, so part of a gap may come from there.
+          </p>
         </>
       )}
     </Card>
@@ -286,8 +658,23 @@ const ShouldCostCard: React.FC<{ data: ShouldCost | null; loading: boolean; quot
  */
 const PriceHistoryCard: React.FC<{ data: HistoricalPrice | null; quotes: QuoteRef[] }> = ({ data, quotes }) => {
   const ranked = [...quotes].sort(byTRank);
+  // Quoting suppliers first (best T-rank first), then past suppliers of this material who aren't quoting.
+  const quotingIds = new Set(ranked.map((q) => q.vendorId));
+  const suppliers: HistorySupplier[] = [
+    ...ranked.map((q) => ({ vendorId: q.vendorId, vendorName: q.vendorName, tRank: q.tRank, quoting: true })),
+    ...(data?.supplierStats ?? data?.pastSuppliers ?? [])
+      .filter((s) => !quotingIds.has(s.vendorId))
+      .map((s) => ({ vendorId: s.vendorId, vendorName: s.vendorName, tRank: null, quoting: false })),
+  ];
+  const [picked, setPicked] = useState<string | null>(null);
+  // One supplier at a time; by default the best-ranked quoting supplier we've bought this material from.
+  const fallback = data
+    ? suppliers.find((s) => s.quoting && statsFor(data, s).count > 0) ?? suppliers.find((s) => statsFor(data, s).count > 0) ?? suppliers[0]
+    : suppliers[0];
+  const selected = suppliers.find((s) => s.vendorId === picked) ?? fallback;
+  const stats = data && selected ? statsFor(data, selected) : null;
   return (
-    <Card title="Our price history">
+    <Card title="Cost History">
       {ranked.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {ranked.map((q) => (
@@ -310,7 +697,55 @@ const PriceHistoryCard: React.FC<{ data: HistoricalPrice | null; quotes: QuoteRe
         <Unavailable text={data.summary} />
       ) : (
         <>
-          <PriceHistoryChart data={data} />
+          {/* Suppliers: pick one to see only its prices (one at a time keeps the chart readable). */}
+          {suppliers.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Supplier">
+              <span className="text-[11px] font-semibold mr-0.5" style={{ color: COLORS.text.secondary }}>Suppliers:</span>
+              {suppliers.map((s) => {
+                const on = s.vendorId === selected?.vendorId;
+                return (
+                  <button
+                    key={s.vendorId}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => setPicked(s.vendorId)}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors duration-150"
+                    style={{
+                      backgroundColor: on ? TEAL.base : COLORS.white,
+                      color: on ? COLORS.white : COLORS.text.primary,
+                      border: `1px solid ${on ? TEAL.base : TEAL.border}`,
+                    }}
+                    title={s.quoting ? 'Quoting on this RFQ' : 'Past supplier of this material'}
+                  >
+                    {s.vendorName}
+                    {s.tRank && <span style={{ opacity: on ? 0.85 : 0.6 }}>· {s.tRank}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {selected && stats && stats.count > 0 ? (
+            <>
+              <PriceHistoryChart orders={stats.orders} />
+              <div className="flex flex-wrap gap-2">
+                <Figure label="Minimum" value={formatINR(stats.min)} unit={data.unit} />
+                <Figure label="Maximum" value={formatINR(stats.max)} unit={data.unit} />
+                <Figure strong label="Average" value={formatINR(stats.avg)} unit={data.unit} />
+              </div>
+              {/* What the figures are, so they're read on the same basis as the quotes. */}
+              <p className="text-[10px] leading-snug" style={{ color: COLORS.text.tertiary }}>
+                {selected.vendorName}: {stats.count} purchase order{stats.count === 1 ? '' : 's'} of this material before this RFQ, unit prices in ₹ per {data.unit}.
+                {stats.fromChartOnly
+                  ? ' This saved study only carries the latest orders, so the figures cover those; re-run the Market Analysis for the full history.'
+                  : stats.orders.length < stats.count
+                    ? ` The chart shows the latest ${stats.orders.length}; the figures cover all ${stats.count}.`
+                    : ''}
+              </p>
+            </>
+          ) : (
+            selected && <Unavailable text="No historical pricing data available." />
+          )}
           <PastSuppliers data={data} />
         </>
       )}
@@ -506,7 +941,8 @@ const vsText = (value: number, base: number): string => {
 };
 
 /**
- * Market Study and Insights: should cost, our price history, the market price
+ * Market Study and Insights: cost history, the market price, sustainability,
+ * the index-based comparison and the should cost
  * and sustainability, in small boxes, two cards to a row (review, 18 Oct: less
  * text, narrower; the rate contract card went, "it doesn't make any sense").
  */
@@ -521,7 +957,9 @@ export const MarketStudyPanel: React.FC<{
   error: string | null;
   /** Quotes still in the running (Not accepted left out). */
   quotes: QuoteRef[];
-}> = ({ market, onlineLoading, marketSearch, marketSearchLoading, error, quotes }) => {
+  /** The product the should cost is for (one per product, not per supplier). */
+  productName?: string;
+}> = ({ market, online, onlineLoading, marketSearch, marketSearchLoading, error, quotes, productName }) => {
   // Open once shown: the cards are what the buyer reads (meeting, 18 Oct).
   const [expanded, setExpanded] = useState(true);
   const vendorIds = quotes.map((q) => q.vendorId);
@@ -539,7 +977,7 @@ export const MarketStudyPanel: React.FC<{
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
             {expanded
               ? 'Hover a chart for values.'
-              : `Should cost, our price history, market prices and sustainability.${onlineLoading || marketSearchLoading ? ' Searching the web for prices…' : ''}`}
+              : `Cost history, market prices, sustainability, index comparison and should cost.${onlineLoading || marketSearchLoading ? ' Searching the web for prices…' : ''}`}
           </p>
         </div>
         <span className="inline-flex items-center gap-1 text-[11px] font-medium flex-shrink-0" style={{ color: TEAL.base }}>
@@ -553,10 +991,22 @@ export const MarketStudyPanel: React.FC<{
         ) : (
           // Two cards to a row on wide screens, so the study fits in less scrolling.
           <div className="grid gap-3 p-4 grid-cols-1 lg:grid-cols-2">
-            <ShouldCostCard data={market?.shouldCost ?? null} loading={!market} quotes={quotes} unit={market?.historical?.unit} />
             <PriceHistoryCard data={market?.historical ?? null} quotes={quotes} />
             <MarketPriceCard market={marketSearch} loading={marketSearchLoading} />
             <SustainabilityCard data={market?.sustainability ?? null} vendorIds={vendorIds} />
+            <IndexComparisonCard data={market?.index} loading={!market} quotes={quotes} unit={market?.historical?.unit} />
+            {/* Last, full width: it draws on the market price above. */}
+            <ShouldCostCard
+              entered={market?.shouldCost ?? null}
+              split={market?.costSplit}
+              productName={productName}
+              online={online ?? market?.online ?? null}
+              marketSearch={marketSearch}
+              loading={!market || onlineLoading || marketSearchLoading}
+              quotes={quotes}
+              unit={market?.historical?.unit}
+            />
+
           </div>
         ))}
     </div>

@@ -321,7 +321,7 @@ const RfqApprovalHome: React.FC<RfqApprovalHomeProps> = ({ SA_RUNTIME, prId, rfq
 
   const evidence: string[] = [
     quote.t_rank
-      ? `Technical rank ${quote.t_rank}${quote.l_rank ? `, price rank ${quote.l_rank}` : ''} (T and L are ranked independently).`
+      ? `Technical bid rank ${quote.t_rank}${quote.l_rank ? `, commercial bid rank ${quote.l_rank}` : ''} (T and L are ranked independently).`
       : quote.is_technically_compliant ? 'Technically compliant with the RFQ requirements.' : 'Not marked technically compliant.',
     `Delivery in ${quote.delivery_days} days, payment terms ${quote.payment_terms}, warranty ${quote.warranty_months} months.`,
   ];

@@ -5,6 +5,7 @@ import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
 import {
   aiRanking,
   RANK_HELP,
+  RANK_SUBLABEL,
   type NegotiationStrategy,
   type RankedVendor,
   type RecommendationPoint,
@@ -34,12 +35,13 @@ const formatTime = (iso: string | null | undefined): string => {
 // T, L and AI ranks are separate columns (walkthrough, 16 Oct: "they are
 // individual columns, not combined T1 L1").
 
-/** Price rank among technically accepted vendors (L1 = lowest price). */
+/** Commercial / price bid rank among technically accepted vendors (L1 = lowest price). */
 export const LRankBadge: React.FC<{ rank: string | null | undefined }> = ({ rank }) =>
   rank ? (
     <span
       className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap"
       style={{ backgroundColor: COLORS.lightGray, color: COLORS.text.primary }}
+      title={`Commercial / Price Bid Ranking: ${rank}`}
     >
       {rank}
     </span>
@@ -112,14 +114,40 @@ const StrategyPointers: React.FC<{ strategy: VendorStrategy | null; loading: boo
   ) : !strategy ? (
     <p className="text-xs" style={{ color: COLORS.text.secondary }}>No pointers for this supplier.</p>
   ) : (
-    <ul className="text-xs space-y-1">
-      {strategy.pointers.map((p) => (
-        <li key={p.heading} className="flex gap-3 leading-relaxed">
-          <span className="w-28 flex-none font-semibold" style={{ color: COLORS.text.secondary }}>{p.heading}</span>
-          <span style={{ color: COLORS.text.primary }}>{p.text}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-2">
+      <p className="text-xs font-semibold" style={{ color: COLORS.text.primary }}>{strategy.vendorName} — Negotiation Recommendations</p>
+      {strategy.pointers.length === 0 ? (
+        <p className="text-xs" style={{ color: COLORS.text.secondary }}>Our data gives no negotiation lever with this supplier.</p>
+      ) : (
+        <ol className="text-xs space-y-1.5">
+          {strategy.pointers.map((p, i) => (
+            <li key={p.heading} className="flex gap-3 leading-relaxed">
+              <span className="w-32 flex-none font-semibold" style={{ color: COLORS.text.secondary }}>
+                {i + 1}. {p.heading}
+              </span>
+              {/* Each point: the reason, then what to do, then the data it rests on. Older saved points have only text. */}
+              {p.reason ? (
+                <span className="min-w-0">
+                  <span style={{ color: COLORS.text.primary }}>{p.reason}</span>{' '}
+                  <span className="font-semibold" style={{ color: TEAL.dark }}>{p.action}</span>
+                  {p.data && (
+                    <span className="block text-[11px]" style={{ color: COLORS.text.tertiary }}>Data: {p.data}</span>
+                  )}
+                </span>
+              ) : (
+                <span style={{ color: COLORS.text.primary }}>{p.text}</span>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {strategy.missing && strategy.missing.length > 0 && (
+        <p className="text-[11px] flex items-start gap-1" style={{ color: '#B45309' }}>
+          <Icon icon="mdi:information-outline" className="w-3.5 h-3.5 flex-none mt-px" />
+          <span>Not enough data for more points. Missing: {strategy.missing.join('; ')}.</span>
+        </p>
+      )}
+    </div>
   );
 
 // Narrow enough not to scroll sideways (review, 18 Oct): the averages, rate contract,
@@ -167,10 +195,15 @@ export const SelectSupplierList: React.FC<{
               <th
                 key={i}
                 title={RANK_HELP[h]}
-                className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap"
+                className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
                 style={{ color: COLORS.text.secondary }}
               >
                 {h}
+                {RANK_SUBLABEL[h] && (
+                  <span className="block text-[10px] font-medium normal-case tracking-normal" style={{ color: COLORS.text.tertiary }}>
+                    {RANK_SUBLABEL[h]}
+                  </span>
+                )}
               </th>
             ))}
           </tr>

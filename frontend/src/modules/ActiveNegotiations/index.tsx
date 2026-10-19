@@ -6,6 +6,7 @@ import LoadingState from '../../components/LoadingState';
 import { TRankBadge } from '../RfqReceived/TechnicalEvaluation';
 import { MarketStudyPanel } from './MarketStudy';
 import { AiRankBadge, LRankBadge, SelectSupplierList } from './SupplierSelection';
+import { SupplierPerformance } from './SupplierPerformance';
 import {
   aiRankByVendor,
   getMarketSearch,
@@ -13,6 +14,7 @@ import {
   getNegotiationStrategy,
   getOnlinePrice,
   RANK_HELP,
+  RANK_SUBLABEL,
   recommendSupplier,
   type MarketInputs,
   type MarketSearch,
@@ -526,7 +528,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
   const factsFor = (q: QuoteRow): string[] => {
     const reasons: string[] = [];
     reasons.push(`Quoted ${formatINR(q.quoted_price)} per ${prLine?.unit_of_measure ?? 'unit'}.`);
-    reasons.push(`Technical rank ${q.t_rank ?? 'not set'}${q.l_rank ? `, price rank ${q.l_rank}` : ''} (T and L are ranked independently).`);
+    reasons.push(`Technical bid rank ${q.t_rank ?? 'not set'}${q.l_rank ? `, commercial bid rank ${q.l_rank}` : ''} (T and L are ranked independently).`);
     reasons.push(`Delivery in ${q.delivery_days} days, payment terms ${q.payment_terms}, warranty ${q.warranty_months} months.`);
     if (q.otd_pct != null) reasons.push(`On-time delivery track record: ${q.otd_pct}%${q.otd_trend ? ` (${q.otd_trend.toLowerCase()})` : ''}.`);
     if (q.financial_risk_tier) reasons.push(`Financial risk tier: ${q.financial_risk_tier}.`);
@@ -627,10 +629,15 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                   <th
                     key={h}
                     title={RANK_HELP[h]}
-                    className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap"
+                    className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
                     style={{ color: COLORS.text.secondary }}
                   >
                     {h}
+                    {RANK_SUBLABEL[h] && (
+                      <span className="block text-[10px] font-medium normal-case tracking-normal" style={{ color: COLORS.text.tertiary }}>
+                        {RANK_SUBLABEL[h]}
+                      </span>
+                    )}
                   </th>
                 ))}
               </tr>
@@ -771,7 +778,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         <div className="px-4 py-3" style={{ borderBottom: `1px solid ${TEAL.border}` }}>
           <h2 className="text-sm font-semibold" style={{ color: COLORS.text.primary }}>Supplier Comparison</h2>
           <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.secondary }}>
-            Technically accepted vendors by quoted price. T-rank and L-rank are separate.
+            Technically accepted vendors by quoted price. T-Rank (technical bid ranking) and L-Rank (commercial / price bid ranking) are ranked separately.
           </p>
           {notAcceptedCount > 0 && (
             <p className="text-[11px] mt-0.5" style={{ color: COLORS.text.tertiary }}>
@@ -790,10 +797,15 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
                   <th
                     key={h}
                     title={RANK_HELP[h]}
-                    className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap"
+                    className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap align-bottom"
                     style={{ color: COLORS.text.secondary }}
                   >
                     {h}
+                    {RANK_SUBLABEL[h] && (
+                      <span className="block text-[10px] font-medium normal-case tracking-normal" style={{ color: COLORS.text.tertiary }}>
+                        {RANK_SUBLABEL[h]}
+                      </span>
+                    )}
                   </th>
                 ))}
               </tr>
@@ -839,6 +851,14 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
         )}
       </div>
 
+      {/* Delivery discipline and sustainability for the same vendors; reading only, ranks untouched. */}
+      {quotes.length > 0 && (
+        <SupplierPerformance
+          suppliers={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank }))}
+          runQuery={(sql, params) => runTool(sql, params, SA_RUNTIME)}
+        />
+      )}
+
         {/* "Market Analysis" (review, 18 Oct), a plain button with no box or text (review, 19 Oct): it runs
             the market study, which opens as a new box below; the recommendation runs in the background. */}
         {quotes.length > 0 && !studyOpen && (
@@ -865,6 +885,7 @@ const ActiveNegotiations: React.FC<ActiveNegotiationsProps> = ({ SA_RUNTIME, prI
             marketSearchLoading={marketSearchLoading}
             error={marketError}
             quotes={quotes.map((q) => ({ vendorId: q.vendor_id, vendorName: q.vendor_name || q.vendor_id, tRank: q.t_rank, price: Number(q.quoted_price) }))}
+            productName={prLine.material_desc || prLine.material_id}
           />
         </NewStep>
       )}

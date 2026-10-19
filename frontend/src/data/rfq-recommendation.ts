@@ -35,6 +35,17 @@ export interface PastSupplier {
   maxPrice: number;
 }
 
+export interface SupplierPriceStats {
+  vendorId: string;
+  vendorName: string;
+  orders: number;
+  minPrice: number;
+  maxPrice: number;
+  avgPrice: number;
+  firstDate: string | null;
+  lastDate: string;
+}
+
 export interface HistoricalPrice {
   available: boolean;
   unit: string;
@@ -54,8 +65,10 @@ export interface HistoricalPrice {
   totalOrders?: number;
   trend3mPct: number | null;
   series?: { month: string; avgPrice: number; orders: number }[];
-  /** Every order, oldest first (latest 240), for the chart. */
-  orders?: { date: string; price: number; vendorName: string }[];
+  /** Every supplier's min / max / average over all its orders of this material, latest supplier first. */
+  supplierStats?: SupplierPriceStats[];
+  /** Every order, oldest first (latest 240), for the chart. `vendorId` is missing in studies saved before 19 Oct. */
+  orders?: { date: string; price: number; vendorId?: string; vendorName: string }[];
   /** The RFQ's date: where its quotes sit on the chart. */
   rfqDate?: string;
   summary: string;
@@ -181,9 +194,44 @@ export interface ContractBenchmark {
   summary: string;
 }
 
+/** The material's cost split as recorded in material_master: each commodity's share of its cost. */
+export interface CostSplit {
+  available: boolean;
+  source?: string;
+  commodities?: { commodity: string; sharePct: number }[];
+  summary: string;
+}
+
+/** One commodity index between our last purchase and the RFQ, and the part of the product's cost it moves. */
+export interface IndexMove {
+  commodity: string;
+  sharePct: number;
+  unit: string | null;
+  fromDate: string | null;
+  fromPrice: number | null;
+  toDate: string | null;
+  toPrice: number | null;
+  changePct: number | null;
+  /** changePct × share: the effect on the product's cost, not the index change itself. */
+  effectPct: number | null;
+}
+
+export interface IndexComparison {
+  available: boolean;
+  baseline?: { date: string; price: number };
+  rfqDate?: string;
+  indices?: IndexMove[];
+  expectedEffectPct?: number | null;
+  indexExplainedPrice?: number | null;
+  summary: string;
+}
+
 export interface MarketInputs {
   /** Missing in recommendations saved before 18 Oct. */
   shouldCost?: ShouldCost;
+  /** Missing in recommendations saved before 19 Oct. */
+  costSplit?: CostSplit;
+  index?: IndexComparison;
   historical: HistoricalPrice;
   commodity: CommodityFeed;
   online: OnlinePrice;
@@ -201,6 +249,10 @@ export interface MarketStudy {
 export interface RecommendationPoint {
   heading: string;
   text: string;
+  /** Negotiation points only: why it's a lever, the data behind it (with its source), and what to do. */
+  reason?: string;
+  data?: string;
+  action?: string;
 }
 
 export interface SupplierRecommendation {
@@ -236,7 +288,10 @@ export interface VendorStrategy {
   lRank: string | null;
   /** Side heading + text, e.g. "Market price", "Market trend", "Delivery record", "Ask". */
   pointers: RecommendationPoint[];
+  /** `pct` is 0 when no benchmark sits below the quote. */
   ask: { pct: number; targetPrice: number; saving: number | null; basis: string };
+  /** Evidence that was missing for this supplier; empty or absent when nothing was. */
+  missing?: string[];
 }
 
 export interface NegotiationStrategy {
@@ -261,10 +316,16 @@ export function aiRanking(rec: SupplierRecommendation): RankedVendor[] {
 export const aiRankByVendor = (rec: SupplierRecommendation | null): Map<string, number> =>
   new Map((rec ? aiRanking(rec) : []).map((v, i) => [v.vendorId, i + 1]));
 
+/** What T and L stand for, shown under the rank column headers everywhere. */
+export const RANK_SUBLABEL: Record<string, string> = {
+  'T-Rank': 'Technical bid',
+  'L-Rank': 'Commercial bid',
+};
+
 /** Header tooltips for the rank columns: T and L are separate ranks, not one combined value. */
 export const RANK_HELP: Record<string, string> = {
-  'T-Rank': 'Technical rank from evaluation: T1 meets every requirement comfortably, T4 has a small deviation',
-  'L-Rank': 'Price rank among technically accepted vendors: L1 is the lowest price',
+  'T-Rank': 'Technical Bid Ranking (T1, T2, T3…): how well the technical bid meets the PR requirements. T1 meets every requirement comfortably; T4 has a small deviation.',
+  'L-Rank': 'Commercial / Price Bid Ranking (L1, L2, L3…): order by quoted price among technically accepted vendors. L1 is the lowest price.',
   'System Rank': 'Order from the System Recommendation: 1 is the recommended vendor, the rest follow by combined score (60% price, 40% technical)',
 };
 
